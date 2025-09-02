@@ -1,0 +1,10 @@
+# In requirements.txt
+numpy
+h5py
+scipy
+scikit-learn
+matplotlib
+diptest
+numba
+networkx
+pyyaml

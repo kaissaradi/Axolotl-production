@@ -1,0 +1,30 @@
+# config.yaml
+# Configuration file for the Axolotl spike sorting pipeline.
+
+paths:
+  raw_data_path: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2.bin"
+  channel_map_path: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2/kilosort4/channel_positions.npy"
+  output_dir: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2/axolotl_output"
+
+  
+recording:
+  n_channels: 512
+  sampling_rate: 20000
+  dtype: 'int16'
+
+testing:
+  enabled: false
+  duration_sec: 30
+
+pipeline:
+  max_units_to_find: 25 
+  window_pre_samples: -40
+  window_post_samples: 80
+  refractory_samples: 10
+  min_spikes_for_cluster: 20
+  p2p_threshold_subtraction: 30
+
+preprocessing:
+  segment_len: 20000
+  diff_thresh: 10
+  trim_fraction: 0.15
