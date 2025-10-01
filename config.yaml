@@ -1,30 +1,44 @@
 # config.yaml
-# Configuration file for the Axolotl spike sorting pipeline.
+# This configuration is specific to the original script with the "Purify" block disabled.
 
 paths:
-  raw_data_path: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2.bin"
-  channel_map_path: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2/kilosort4/channel_positions.npy"
-  output_dir: "/home/localadmin/Documents/Development/data/sorted/20250121C/chunk1and2/axolotl_output"
+  # These paths are active and used by the script.
+  raw_data_path: "chunk3.bin"
+  channel_map_path: "channel_positions.npy"
+  output_dir: "output"
 
-  
 recording:
+  # These recording parameters are active and used by the script.
   n_channels: 512
   sampling_rate: 20000
   dtype: 'int16'
 
 testing:
-  enabled: false
+  # These testing parameters are active and used by the script.
+  enabled: true
   duration_sec: 30
+  max_units: 5
 
 pipeline:
-  max_units_to_find: 25 
+  # These pipeline parameters are active and used by the script.
+  max_units_to_find: 5000
   window_pre_samples: -40
   window_post_samples: 80
   refractory_samples: 10
-  min_spikes_for_cluster: 20
-  p2p_threshold_subtraction: 30
+
+  # NOTE: This parameter is IGNORED. The script has a hardcoded p2p_threshold of 30.
+  #p2p_threshold_subtraction: 30
+  
+  # NOTE: The following parameters are from the corrected script and have NO EFFECT on this version.
+  # min_spikes_for_final_unit: 100
+  # similarity_threshold_for_merge: 0.95
 
 preprocessing:
+  # This parameter is active and used by the script.
   segment_len: 20000
-  diff_thresh: 10
-  trim_fraction: 0.15
+
+  # NOTE: The following parameters are IGNORED. The script uses hardcoded values.
+  # diff_thresh is hardcoded as 10.
+  # trim_fraction is hardcoded as 0.15.
+  # diff_thresh: 10
+  # trim_fraction: 0.15

@@ -49,19 +49,27 @@ def main(config_path):
 
     print(f"Output directory '{output_dir}' is ready.")
 
-    # --- Load Data and Preprocess ---
-    raw_data = load_raw_binary(raw_data_path, n_channels, dtype)
-    total_samples = raw_data.shape[0]
 
-    if config['testing'].get('enabled', False):
+    # run_axolotl.py in main()
+
+    # --- Determine max samples for test mode BEFORE loading ---
+    max_samples_to_load = None
+    if config['testing'].get('enabled', False): #<-- CHECKS BEFORE LOADING
         duration_sec = config['testing']['duration_sec']
         print(f"--- RUNNING IN TEST MODE on first {duration_sec}s of data ---")
-        duration_samples = duration_sec * sampling_rate
-        if total_samples > duration_samples:
-            raw_data = raw_data[:duration_samples, :]
-            total_samples = raw_data.shape[0]
-            print(f"Data sliced to {total_samples:,} samples for testing.")
+        max_samples_to_load = int(duration_sec * sampling_rate) #<-- CALCULATES LIMIT
         max_units_to_find = config['testing'].get('max_units', 15)
+
+    # --- Load Data and Preprocess ---
+    raw_data = load_raw_binary( #<-- LOADS ONLY WHAT'S NEEDED
+        raw_data_path, 
+        n_channels, 
+        dtype, 
+        max_samples=max_samples_to_load  #<-- PASSES THE LIMIT
+    )
+    total_samples = raw_data.shape[0]
+
+    # The old slicing block is now gone because it's no longer needed.
 
     ei_positions = load_channel_map(channel_map_path)
 
