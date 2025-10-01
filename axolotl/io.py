@@ -9,7 +9,10 @@ import os
 import yaml
 import tempfile
 
-def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16') -> np.ndarray:
+# axolotl/io.py
+
+
+def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16', max_samples: int = None) -> np.ndarray:
     """
     Loads raw binary ephys data from a file into a memory-mapped array.
     This function creates a temporary, writable copy of the data to ensure
@@ -23,6 +26,9 @@ def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16') -> np
         The number of channels in the recording.
     dtype : str
         The data type of the raw file (e.g., 'int16').
+    max_samples : int, optional
+        Maximum number of samples (time points) to load from the start of the file.
+        If None, the entire file is loaded. Defaults to None.
 
     Returns
     -------
@@ -34,10 +40,17 @@ def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16') -> np
         
     file_size_bytes = os.path.getsize(data_path)
     item_size = np.dtype(dtype).itemsize
-    total_samples = file_size_bytes // (item_size * n_channels)
+    total_possible_samples = file_size_bytes // (item_size * n_channels)
+    
+    # Determine the number of samples to actually load
+    if max_samples is not None and max_samples > 0:
+        total_samples = min(total_possible_samples, max_samples)
+        print(f"Loading a subset of {total_samples:,} samples for testing.")
+    else:
+        total_samples = total_possible_samples
     
     print(f"Memory-mapping {total_samples:,} samples from {data_path}...")
-    # Open the original data file as read-only
+    # Open the original data file as read-only, respecting the sample limit
     original_data = np.memmap(data_path, dtype=dtype, mode='r', shape=(n_channels, total_samples), order='F').T
     
     # Create a temporary file to hold the writable memory-mapped copy
@@ -47,7 +60,7 @@ def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16') -> np
     temp_fp.close() # Close the file handle so memmap can take over
 
     print(f"Creating a writable temporary copy at: {temp_path}")
-    # Create a new, writable memory-mapped file
+    # Create a new, writable memory-mapped file with the correct (potentially smaller) shape
     writable_data = np.memmap(temp_path, dtype=dtype, mode='w+', shape=original_data.shape, order='C')
     
     # Copy the data from the read-only file to the writable one
@@ -151,5 +164,13 @@ def save_phy_results(
     with open(os.path.join(output_dir, 'params.yml'), 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
         
-    print("Results saved successfully.")
+    # --- Create and save cluster_group.tsv ---
+    print("Creating cluster_group.tsv...")
+    unique_clusters = np.unique(spike_clusters)
 
+    with open(os.path.join(output_dir, 'cluster_group.tsv'), 'w') as f:
+        f.write("cluster_id\tgroup\n")  # Write the header
+        for cluster_id in unique_clusters:
+            f.write(f"{cluster_id}\tgood\n")
+
+    print("Results saved successfully.")

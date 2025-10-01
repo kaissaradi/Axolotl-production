@@ -104,7 +104,7 @@ def _estimate_lags_numba(data, template, max_lag):
         lags[i] = max(-max_lag, min(lag, max_lag))
     return lags
 
-def check_2d_gap_peaks_valley(pcs, angle_step=10, min_valley_frac=0.25):
+def check_2d_gap_peaks_valley(pcs, angle_step=10, min_valley_frac=0.35):
     """
     Projects 2D data along multiple angles, finds the projection with the
     most prominent valley between two peaks in its histogram, and returns a
