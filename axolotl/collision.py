@@ -31,11 +31,7 @@ from collections import defaultdict
 from typing import Dict, List, Sequence, Tuple, Iterable
 
 import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
 from sklearn.mixture import GaussianMixture
-
-from .plotting import plot_ei_waveforms
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,7 +81,7 @@ def quick_unit_filter(
     delta_thr: float = 0.0,
     rms_raw
 ):
-    """Fast x-corr gate; returns DataFrame of units that improve ΔRMS."""
+    """Fast x-corr gate; returns list of dicts for units that improve ΔRMS."""
     rows = []
 
     for uid in unit_ids:
@@ -102,7 +98,7 @@ def quick_unit_filter(
         weights = trace_ei.max(axis=1) - trace_ei.min(axis=1)
         weights[weights > 200] = 200
         scores = []
-        for lag in range(41):
+        for lag in range(-40, 41):
             shifted_ei = roll_zero_all(trace_ei, lag)
             rms_res = np.sqrt(((trace_rw - shifted_ei) ** 2).mean(axis=1))
             delta = np.sum(weights * (rms_res - rms_raw[sel_ch]))
@@ -118,7 +114,7 @@ def quick_unit_filter(
                 'peak_ch': peak_ch,
             })
 
-    return pd.DataFrame(rows)
+    return rows
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,13 +123,15 @@ def quick_unit_filter(
 
 def build_channel_index(good_units, unit_info):
     """
-    good_units :  list / array / pandas-Series of uid strings  OR
-                  DataFrame with a 'uid' column
+    good_units :  list / array of uid ints, or a sequence of dicts with a 'uid' key,
+                  or any iterable with a 'uid' column attribute (e.g. from quick_unit_filter)
     unit_info  : {uid: {'selected_channels': [...]}}
     Returns    : {channel: [uids]}
     """
     if hasattr(good_units, "columns") and "uid" in good_units.columns:
         uid_iter = good_units["uid"]
+    elif good_units and isinstance(good_units[0], dict):
+        uid_iter = [r["uid"] for r in good_units]
     else:
         uid_iter = good_units
 
@@ -614,7 +612,12 @@ def resolve_snippet(
             per_unit_delta[uid] = score_full - score_minus
 
     if len(pruned) > 0:
-        best_combo_global = {"lags": pruned, "score": score_full}
+        final_score = score_active_set(
+            pruned, union_chans, raw_local,
+            unit_info, p2p_all, rolled_bank,
+            beta=beta, rms_raw=rms_raw,
+        )
+        best_combo_global = {"lags": pruned, "score": final_score}
     else:
         best_combo_global = {}
 
@@ -694,7 +697,7 @@ def micro_align_units(
     mask_thr: float = 5.0,
     beta: float = 0.5,
     micro_sweep: int = 2,
-) -> Dict[int, int]:
+) -> Tuple[Dict[int, int], Dict[int, float]]:
     """Fine-tune lags around median using ±*micro_sweep* neighbourhood."""
     final_lags: Dict[int, int] = {}
     final_deltas: Dict[int, int] = {}
@@ -739,7 +742,7 @@ def subtract_overlap_tail(
     C, T = raw_next_snip.shape
     for uid, lag_prev in accepted_prev.items():
         ei = unit_info[uid]["ei"]
-        tmpl = roll_zero(ei, lag_prev)
+        tmpl = roll_zero_all(ei, lag_prev)
         start = tmpl.shape[1] - overlap
         end = start + T
         if start >= tmpl.shape[1]:
