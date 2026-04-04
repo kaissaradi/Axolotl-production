@@ -1,44 +1,39 @@
-# config.yaml
-# This configuration is specific to the original script with the "Purify" block disabled.
+# axolotl/config.yaml
 
 paths:
-  # These paths are active and used by the script.
-  raw_data_path: "chunk3.bin"
-  channel_map_path: "channel_positions.npy"
-  output_dir: "output"
+  # For Litke mode, point this to the folder containing your 2-minute chunked .bin/.dat files
+  raw_data_path: "/path/to/your/litke/chunks/folder/"
+  channel_map_path: "path/to/channel_map.npy"
+  output_dir: "output_results/"
 
 recording:
-  # These recording parameters are active and used by the script.
-  n_channels: 512
+  # The format flag triggers the VirtualLitkeArray in io.py
+  # Set to 'litke' for folder chunks, or 'binary' (or leave blank) for standard flat files
+  format: "litke"
+  
+  # For Litke, this should be the RAW channel count per chunk (e.g., 513 to include TTL)
+  # The pipeline will automatically shrink this to the valid channel count dynamically.
+  n_channels: 513
   sampling_rate: 20000
-  dtype: 'int16'
-
-testing:
-  # These testing parameters are active and used by the script.
-  enabled: true
-  duration_sec: 30
-  max_units: 5
+  dtype: "int16"
+  
+  # Optional: Provide a list of known good electrode indices. 
+  # If left blank/commented out, the pipeline assumes all channels except index 0 (TTL) are valid.
+  # connected_electrodes: [1, 2, 3, 5, 6, ..., 512]
 
 pipeline:
-  # These pipeline parameters are active and used by the script.
-  max_units_to_find: 5000
-  window_pre_samples: -40
-  window_post_samples: 80
-  refractory_samples: 10
-
-  # NOTE: This parameter is IGNORED. The script has a hardcoded p2p_threshold of 30.
-  #p2p_threshold_subtraction: 30
-  
-  # NOTE: The following parameters are from the corrected script and have NO EFFECT on this version.
-  # min_spikes_for_final_unit: 100
-  # similarity_threshold_for_merge: 0.95
+  max_units_to_find: 200
+  window_pre_samples: 20
+  window_post_samples: 40
+  refractory_samples: 30
 
 preprocessing:
-  # This parameter is active and used by the script.
-  segment_len: 20000
+  segment_len: 100000
 
-  # NOTE: The following parameters are IGNORED. The script uses hardcoded values.
-  # diff_thresh is hardcoded as 10.
-  # trim_fraction is hardcoded as 0.15.
-  # diff_thresh: 10
-  # trim_fraction: 0.15
+# duplicate_threshold: 0.85
+# post_merge_duplicates: True
+
+testing:
+  enabled: False
+  duration_sec: 60
+  max_units: 15

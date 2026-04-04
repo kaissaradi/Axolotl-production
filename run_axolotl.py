@@ -16,7 +16,7 @@ import json
 from typing import List, Dict
 from sklearn.decomposition import PCA
 
-from axolotl.io import load_raw_binary, load_channel_map, save_phy_results
+from axolotl.io import load_raw_binary, load_channel_map, save_phy_results, load_litke_folder
 from axolotl.preprocessing import compute_baselines_int16_deriv_robust, subtract_segment_baselines_int16
 from axolotl.detection import estimate_spike_threshold_ram, find_dominant_channel_ram
 from axolotl.waveform_utils import extract_snippets_fast_ram, estimate_lags_by_xcorr_ram, check_2d_gap_peaks_valley
@@ -88,6 +88,8 @@ def main(config_path: str):
     n_channels = config['recording']['n_channels']
     sampling_rate = config['recording']['sampling_rate']
     dtype = config['recording']['dtype']
+    data_format = config['recording'].get('format', 'binary')
+    connected_electrodes = config['recording'].get('connected_electrodes', None)
 
     max_units_to_find = config['pipeline']['max_units_to_find']
     window = (config['pipeline']['window_pre_samples'], config['pipeline']['window_post_samples'])
@@ -108,9 +110,31 @@ def main(config_path: str):
         max_samples_to_load = int(duration_sec * sampling_rate)
         max_units_to_find = config['testing'].get('max_units', 15)
 
-    raw_data = load_raw_binary(raw_data_path, n_channels, dtype, max_samples=max_samples_to_load)
+    # Route loading logic based on format
+    if data_format == 'litke':
+        print(f"--- LITKE MODE: Loading chunked data from folder ---")
+        raw_data = load_litke_folder(
+            folder_path=raw_data_path,
+            n_channels_raw=n_channels,
+            dtype=dtype,
+            max_samples=max_samples_to_load,
+            connected_electrodes=connected_electrodes
+        )
+        # Update the pipeline's channel count to match the pruned valid channels
+        n_channels = raw_data.n_channels_out
+    else:
+        raw_data = load_raw_binary(raw_data_path, n_channels, dtype, max_samples=max_samples_to_load)
+
     total_samples = raw_data.shape[0]
     ei_positions = load_channel_map(channel_map_path)
+
+    # Filter positions map if Litke mode dropped dead channels/TTL
+    if data_format == 'litke' and len(ei_positions) > n_channels:
+        if connected_electrodes is not None:
+            ei_positions = ei_positions[connected_electrodes]
+        else:
+            # Fallback assuming index 0 (TTL) was the only channel dropped
+            ei_positions = ei_positions[1:n_channels + 1]
 
     if os.path.exists(baseline_path):
         print(f"Loading pre-computed baselines from {baseline_path}")
