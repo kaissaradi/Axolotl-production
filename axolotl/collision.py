@@ -1,22 +1,18 @@
-"""collision_utils.py
-Utility helpers for axon‑based spike‑collision modelling.
+"""collision.py
+Utility helpers for axon-based spike-collision modelling.
 
-The module now has **two tiers of lag handling**:
+The module has **two tiers of lag handling**:
 
-1. **`quick_unit_filter()`** – a *fast* pass that uses cross‑correlation on the
+1. **`quick_unit_filter()`** – a *fast* pass that uses cross-correlation on the
    **peak channel only** to align each template, computes ΔRMS on the full
-   selected‑channel set, and returns the subset of units that produce a
-   negative (i.e. improving) ΔRMS below a user threshold (default –5).
-   This is the new gate you asked for on 9 Jul 2025.
+   selected-channel set, and returns the subset of units that produce a
+   negative (i.e. improving) ΔRMS below a user threshold (default 0).
 
-2. **`scan_unit_lags()`** – the existing exhaustive per‑unit lag scan (using
-   `lag_delta_rms`) but now run **only on the units accepted by the quick
-   filter**.
+2. **`scan_unit_lags()`** – the existing exhaustive per-unit lag scan (using
+   `lag_delta_rms`) run only on the units accepted by the quick filter.
 
 The downstream API (evaluate_local_group → resolve_snippet →
 accumulate_unit_stats etc.) is unchanged.
-
-All numeric hyper‑parameters are kwargs with sensible defaults.
 
 ---------------------------------------------------------------------
 Public symbols
@@ -25,7 +21,7 @@ roll_zero, roll_zero_all, tempered_weights, quick_unit_filter,
 build_channel_index, lag_delta_rms, scan_unit_lags, score_active_set,
 beam_combo_search, prune_combo, evaluate_local_group, is_certain,
 resolve_snippet, accumulate_unit_stats, accept_units, micro_align_units,
-subtract_overlap_tail, MAX_W_UNITS
+subtract_overlap_tail, per_channel_gmm_bimodality, MAX_W_UNITS
 """
 
 from __future__ import annotations
@@ -37,16 +33,17 @@ from typing import Dict, List, Sequence, Tuple, Iterable
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from sklearn.mixture import GaussianMixture
 
 from .plotting import plot_ei_waveforms
 
 
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Basic helpers
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def roll_zero(arr: np.ndarray, lag: int) -> np.ndarray:
-    """Shift 1‑D array by *lag* samples with zero‑padding (no wrap‑around)."""
+    """Shift 1-D array by *lag* samples with zero-padding (no wrap-around)."""
     out = np.zeros_like(arr)
     if lag > 0:
         out[lag:] = arr[:-lag]
@@ -76,9 +73,10 @@ def tempered_weights(p2p_vec: np.ndarray, chans: Iterable[int], *, beta: float =
     return w / s if s else w
 
 
-# ------------------------------------------------------------------
-# 0.  FAST PEAK‑CHANNEL FILTER
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. Fast peak-channel filter
+# ─────────────────────────────────────────────────────────────────────────────
+
 def quick_unit_filter(
     unit_ids,
     raw_snippet: np.ndarray,
@@ -87,13 +85,13 @@ def quick_unit_filter(
     delta_thr: float = 0.0,
     rms_raw
 ):
-    """Fast x-corr gate; behaviour now identical to the original inline code."""
+    """Fast x-corr gate; returns DataFrame of units that improve ΔRMS."""
     rows = []
 
     for uid in unit_ids:
-        ei       = unit_info[uid]['ei']
-        peak_ch  = unit_info[uid]['peak_channel']
-        sel_ch   = unit_info[uid]['selected_channels']
+        ei = unit_info[uid]['ei']
+        peak_ch = unit_info[uid]['peak_channel']
+        sel_ch = unit_info[uid]['selected_channels']
 
         if len(sel_ch) == 0:
             continue
@@ -123,13 +121,14 @@ def quick_unit_filter(
     return pd.DataFrame(rows)
 
 
-# ------------------------------------------------------------------
-# 1.  Channel index
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel-to-unit index
+# ─────────────────────────────────────────────────────────────────────────────
 
 def build_channel_index(good_units, unit_info):
     """
-    good_units :  list / array / pandas-Series of uid strings  OR  DataFrame with 'uid' column
+    good_units :  list / array / pandas-Series of uid strings  OR
+                  DataFrame with a 'uid' column
     unit_info  : {uid: {'selected_channels': [...]}}
     Returns    : {channel: [uids]}
     """
@@ -145,9 +144,9 @@ def build_channel_index(good_units, unit_info):
     return dict(sorted(ch_map.items()))
 
 
-# ------------------------------------------------------------------
-# 2.  PER‑UNIT ΔRMS SWEEP
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Per-unit ΔRMS sweep
+# ─────────────────────────────────────────────────────────────────────────────
 
 def lag_delta_rms(
     uid: int,
@@ -163,7 +162,7 @@ def lag_delta_rms(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Scan lags so that the EI's absolute peak (index *peak_idx*) lands in
-    snippet samples 40 … 80.
+    snippet samples 40…80.
 
     Returns
     -------
@@ -172,36 +171,40 @@ def lag_delta_rms(
     """
     ei = unit_info[uid]["ei"]
 
-    peak_idx      = 40
+    peak_idx = 40
     target_center = 60
-    base          = target_center - peak_idx
+    base = target_center - peak_idx
+
     lag_min = base - max_lag
     lag_max = base + max_lag
-    lags    = np.arange(lag_min, lag_max + 1)
+    lags = np.arange(lag_min, lag_max + 1)
 
-    a_ch   = p2p_all[uid]
-    chans  = [c for c in unit_info[uid]["selected_channels"]
-              if a_ch[c] >= amp_thr]
+    a_ch = p2p_all[uid]
+    chans = [c for c in unit_info[uid]["selected_channels"]
+             if a_ch[c] >= amp_thr]
     if not chans:
         raise ValueError("no channels above amp_thr")
 
-    W     = tempered_weights(a_ch, chans, beta=beta)
+    W = tempered_weights(a_ch, chans, beta=beta)
     score = np.zeros_like(lags, dtype=np.float32)
 
     for i, lag in enumerate(lags):
         shifted_ei = roll_zero_all(ei[chans], lag)
+
         raw_sel = raw_snippet[chans]
         weights = shifted_ei.max(axis=1) - shifted_ei.min(axis=1)
         weights[weights > 200] = 200
+
         rms_res = np.sqrt(((raw_sel - shifted_ei) ** 2).mean(axis=1))
         delta = np.sum(weights * (rms_res - rms_raw[chans]))
+
         score[i] = -delta
     return lags, score
 
 
-# ------------------------------------------------------------------
-# 3.  SCAN TOP‑K LAGS FOR A SET OF UNITS
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Scan top-k lags for a set of units
+# ─────────────────────────────────────────────────────────────────────────────
 
 def scan_unit_lags(
     unit_ids: Iterable[int],
@@ -233,7 +236,7 @@ def scan_unit_lags(
             if not keep.any():
                 continue
 
-            lags  = lags[keep]
+            lags = lags[keep]
             score = score[keep]
             order = np.argsort(score)[::-1][:top_k]
             lag_dict[uid] = [int(lags[j]) for j in order]
@@ -244,9 +247,9 @@ def scan_unit_lags(
     return lag_dict
 
 
-# ------------------------------------------------------------------
-# 4.  Combo-scoring primitives
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Combo-scoring primitives
+# ─────────────────────────────────────────────────────────────────────────────
 
 def score_active_set(
     active_dict: Dict[int, int],
@@ -261,9 +264,7 @@ def score_active_set(
     debug: bool = False,
     chan_weights=None,
 ) -> float:
-    """
-    Return weighted ΔRMS for the given unit set.
-    """
+    """Return weighted ΔRMS for the given unit set."""
     if not active_dict:
         return 0.0
 
@@ -291,13 +292,13 @@ def score_active_set(
             print(f"channel {ch}: {val:.1f}")
     delta = np.sum(weights * (rms_res - rms_raw[union_chans]))
 
-    score = -delta
-    return score
+    return -delta
 
 
-# ------------------------------------------------------------------
-# 5.  Beam search
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Beam search
+# ─────────────────────────────────────────────────────────────────────────────
+
 def beam_combo_search(units, lag_dict, union_chans, raw_local,
                       unit_info, p2p_all, rolled_bank,
                       *, beta=0.5, beam=4, rms_raw):
@@ -308,6 +309,7 @@ def beam_combo_search(units, lag_dict, union_chans, raw_local,
     lag_dict     : {uid: [lag1, lag2, …]}
     union_chans  : list[int]
     raw_local    : ndarray (len(union_chans), T)
+
     Returns
     -------
     best_combo   : dict {'lags': {uid:lag}, 'score': ΔRMS}
@@ -329,24 +331,20 @@ def beam_combo_search(units, lag_dict, union_chans, raw_local,
                 )
                 new_beams.append((active2, s2))
 
-        new_beams.sort(key=lambda t: t[1], reverse=True)
+        new_beams.sort(key=lambda x: x[1], reverse=True)
         beams = new_beams[:beam]
 
     best_active, best_score = beams[0]
     return {'lags': best_active, 'score': best_score}
 
 
-def prune_combo(active, union_chans, raw_local,
-                unit_info, p2p_all, rolled_bank, rms_raw,
-                *, beta=0.5):
-    """
-    Iteratively remove units with non-positive marginal ΔRMS.
-    """
+def prune_combo(active, union_chans, raw_local, unit_info, p2p_all, rolled_bank, rms_raw,
+                beta=0.5):
     changed = True
-    while changed and active:
+    while changed:
         changed = False
-        score_full = score_active_set(active, union_chans,
-                                      raw_local, unit_info, p2p_all, rolled_bank,
+        score_full = score_active_set(active, union_chans, raw_local,
+                                      unit_info, p2p_all, rolled_bank,
                                       beta=beta, rms_raw=rms_raw)
         worst_uid, worst_gain = None, None
         for u in list(active):
@@ -363,11 +361,9 @@ def prune_combo(active, union_chans, raw_local,
     return active
 
 
-# ------------------------------------------------------------------
-# 6.  Evaluate local group
-# ------------------------------------------------------------------
-MAX_W_UNITS = 15
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Evaluate local group
+# ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate_local_group(
     c0: int,
@@ -396,19 +392,19 @@ def evaluate_local_group(
     for u in working_units:
         union.update(np.where(p2p_all[u] >= amp_thr)[0])
     union_chans = sorted(union)
-    raw_local   = raw_snippet[union_chans]
+    raw_local = raw_snippet[union_chans]
 
     best_combo = beam_combo_search(
-        units       = working_units,
-        lag_dict    = lag_dict,
-        union_chans = union_chans,
-        raw_local   = raw_local,
-        unit_info   = unit_info,
-        p2p_all     = p2p_all,
-        rolled_bank = rolled_bank,
-        beta        = beta,
-        beam        = beam,
-        rms_raw     = rms_raw
+        units=working_units,
+        lag_dict=lag_dict,
+        union_chans=union_chans,
+        raw_local=raw_local,
+        unit_info=unit_info,
+        p2p_all=p2p_all,
+        rolled_bank=rolled_bank,
+        beta=beta,
+        beam=beam,
+        rms_raw=rms_raw
     )
 
     pruned_lags = prune_combo(
@@ -416,7 +412,7 @@ def evaluate_local_group(
         union_chans, raw_local,
         unit_info, p2p_all, rolled_bank, rms_raw
     )
-    best_combo['lags']  = pruned_lags
+    best_combo['lags'] = pruned_lags
     best_combo['score'] = score_active_set(
         pruned_lags, union_chans,
         raw_local, unit_info, p2p_all, rolled_bank,
@@ -431,9 +427,9 @@ def evaluate_local_group(
     return best_combo, per_unit_delta
 
 
-# ------------------------------------------------------------------
-# 7.  Quick helper – is a unit already "settled"?
-# ------------------------------------------------------------------
+MAX_W_UNITS = 15  # hard cap per anchor channel
+
+
 def is_certain(uid, unit_log, pos_thresh=3, neg_thresh=3):
     """
     Return True if this uid was either:
@@ -448,9 +444,9 @@ def is_certain(uid, unit_log, pos_thresh=3, neg_thresh=3):
     return (pos >= pos_thresh) or (neg >= neg_thresh and pos == 0)
 
 
-# ------------------------------------------------------------------
-# 8.  Snippet-level resolver
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Snippet-level resolver
+# ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_snippet(
     raw_snippet: np.ndarray,
@@ -468,7 +464,7 @@ def resolve_snippet(
     ei_positions,
     plot: bool = False,
 ):
-    """Run the unresolved‑channel loop for one snippet.
+    """Run the unresolved-channel loop for one snippet.
 
     Returns
     -------
@@ -536,6 +532,7 @@ def resolve_snippet(
     raw_local = raw_snippet[union_chans]
 
     def _template_sum(active_dict, union_chans, rolled_bank):
+        """Return [len(union_chans), T] sum of rolled templates in active_dict."""
         if not active_dict:
             return np.zeros_like(raw_local, dtype=np.float32)
 
@@ -586,6 +583,7 @@ def resolve_snippet(
     if len(active) > 0:
         pruned = marginal_prune(active, local_beta=0.5)
 
+    # Per-unit marginal ΔRMS on pruned set
     per_unit_delta = {}
     if len(pruned) > 0:
         for uid in list(pruned):
@@ -613,7 +611,6 @@ def resolve_snippet(
                 chan_weights=weights
             )
 
-            gain = score_full - score_minus
             per_unit_delta[uid] = score_full - score_minus
 
     if len(pruned) > 0:
@@ -624,9 +621,9 @@ def resolve_snippet(
     return best_combo_global, per_unit_delta, combo_history
 
 
-# ------------------------------------------------------------------
-# 9.  Acceptance & tuning
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Acceptance & tuning
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _robust_median(x: Sequence[float]) -> float:
     return float(np.nanmedian(x)) if len(x) else np.nan
@@ -642,23 +639,23 @@ def accumulate_unit_stats(unit_log: Dict[int, Dict]) -> Dict[int, Dict]:
     stats = {}
     for uid, rec in unit_log.items():
         d = np.asarray(rec["deltas"], float)
-        L = np.asarray(rec["lags"],   float)
+        L = np.asarray(rec["lags"], float)
 
-        pos_mask   = d > 0
-        lag_mask   = ~np.isnan(L) & pos_mask
+        pos_mask = d > 0
+        lag_mask = ~np.isnan(L) & pos_mask
 
-        pos_delta  = d[pos_mask]
-        good_lags  = L[lag_mask]
+        pos_delta = d[pos_mask]
+        good_lags = L[lag_mask]
 
         stats[uid] = {
-            "delta_sum" : float(np.nansum(pos_delta)),
-            "delta_pos" : float(np.nansum(pos_delta)),
-            "delta_neg" : float(np.nansum(d[d < 0])),
-            "count_pos" : int(pos_mask.sum()),
-            "count_neg" : int((d <= 0).sum()),
-            "lag_med"   : np.nanmedian(good_lags) if good_lags.size else np.nan,
-            "lag_mad"   : np.nanmedian(np.abs(good_lags - np.nanmedian(good_lags)))
-                          if good_lags.size else np.inf
+            "delta_sum": float(np.nansum(pos_delta)),
+            "delta_pos": float(np.nansum(pos_delta)),
+            "delta_neg": float(np.nansum(d[d < 0])),
+            "count_pos": int(pos_mask.sum()),
+            "count_neg": int((d <= 0).sum()),
+            "lag_med": np.nanmedian(good_lags) if good_lags.size else np.nan,
+            "lag_mad": np.nanmedian(np.abs(good_lags - np.nanmedian(good_lags)))
+                       if good_lags.size else np.inf
         }
     return stats
 
@@ -679,7 +676,8 @@ def accept_units(
         N = s["delta_neg"]
         H = abs(N) / P if P else np.inf
         net = P + N
-        if P >= pos_min and net >= net_min and H <= h_max and s["lag_mad"] <= lag_mad_max and s["lag_med"] <= lag_med_max:
+        if (P >= pos_min and net >= net_min and H <= h_max
+                and s["lag_mad"] <= lag_mad_max and s["lag_med"] <= lag_med_max):
             accepted.append(uid)
     rejected = [u for u in stats if u not in accepted]
     return accepted, rejected
@@ -697,7 +695,7 @@ def micro_align_units(
     beta: float = 0.5,
     micro_sweep: int = 2,
 ) -> Dict[int, int]:
-    """Fine‑tune lags around median using ±*micro_sweep* neighbourhood."""
+    """Fine-tune lags around median using ±*micro_sweep* neighbourhood."""
     final_lags: Dict[int, int] = {}
     final_deltas: Dict[int, int] = {}
     for uid in accepted:
@@ -711,7 +709,9 @@ def micro_align_units(
             rolled_bank = {
                 (uid, lag): np.roll(ei_full, shift=lag, axis=1)
             }
-            score = score_active_set({uid: lag}, sel_ch, raw_snippet[sel_ch], unit_info, p2p_all, rolled_bank, beta=beta, rms_raw=rms_raw)
+            score = score_active_set({uid: lag}, sel_ch, raw_snippet[sel_ch],
+                                     unit_info, p2p_all, rolled_bank,
+                                     beta=beta, rms_raw=rms_raw)
 
             if score > best_score:
                 best_score = score
@@ -722,9 +722,9 @@ def micro_align_units(
     return final_lags, final_deltas
 
 
-# ------------------------------------------------------------------
-# 10.  Overlap subtraction
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Overlap subtraction
+# ─────────────────────────────────────────────────────────────────────────────
 
 def subtract_overlap_tail(
     raw_next_snip: np.ndarray,
@@ -744,9 +744,126 @@ def subtract_overlap_tail(
         end = start + T
         if start >= tmpl.shape[1]:
             continue
-        tmpl_slice = tmpl[:, max(0, start) : min(end, tmpl.shape[1])]
+        tmpl_slice = tmpl[:, max(0, start): min(end, tmpl.shape[1])]
         dst_start = max(0, -start)
         dst_end = dst_start + tmpl_slice.shape[1]
         chan_mask = p2p_all[uid] >= abs_thr
         raw_next_snip[chan_mask, dst_start:dst_end] -= tmpl_slice[chan_mask]
     return raw_next_snip
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GMM bimodality (core pipeline version)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def per_channel_gmm_bimodality(
+    ei, snips, n_top=5, min_sep=2.0,
+    include_ref40=True, win40=3, min_cluster_size=20,
+    pool_ids=None
+):
+    """
+    For each channel, evaluate 2-GMM separation at multiple candidate times.
+    Returns top n_top channels by separation score.
+
+    Keys in each output dict:
+      sep, chan, t, vmin, vmax, thr, mu_lo, mu_hi, std_lo, std_hi,
+      n_lo, n_hi, polarity, cand_mask, other_mask,
+      cand_idx, other_idx, cand_idx_global, other_idx_global,
+      amp_lo, amp_hi, score_amp
+    """
+    C, T, N = snips.shape
+    out = []
+
+    for c in range(C):
+        t_peak = int(np.argmax(np.abs(ei[c])))
+        cand_times = {t_peak}
+        if include_ref40:
+            for d in range(-win40, win40 + 1, 2):
+                t = t_peak + d
+                if 0 <= t < T:
+                    cand_times.add(t)
+
+        best = None
+
+        for t in cand_times:
+            v = snips[c, t, :].reshape(-1, 1)
+            gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=0)
+            try:
+                gmm.fit(v)
+            except Exception:
+                continue
+
+            labels = gmm.predict(v)
+            counts = np.bincount(labels, minlength=2)
+            if counts.min() < min_cluster_size:
+                continue
+
+            mu = gmm.means_.flatten()
+            std = np.array([np.sqrt(gmm.covariances_[k][0, 0]) for k in (0, 1)], dtype=float)
+
+            order = np.argsort(mu)
+            mu_lo, mu_hi = mu[order[0]], mu[order[1]]
+            std_lo, std_hi = std[order[0]], std[order[1]]
+            lab_lo = (labels == order[0])
+            lab_hi = (labels == order[1])
+
+            sep = abs(mu_hi - mu_lo) / np.sqrt(0.5 * (std_lo**2 + std_hi**2))
+
+            if sep >= min_sep and (best is None or sep > best[0]):
+                vflat = v.ravel()
+                best = (
+                    float(sep), int(t),
+                    float(vflat.min()), float(vflat.max()),
+                    lab_lo.copy(), lab_hi.copy(),
+                    float(mu_lo), float(mu_hi),
+                    float(std_lo), float(std_hi)
+                )
+
+        if best is None:
+            continue
+
+        sep, t_best, vmin, vmax, lab_lo, lab_hi, mu_lo, mu_hi, std_lo, std_hi = best
+
+        pol = float(np.sign(ei[c, t_best]))
+        if pol < 0:
+            cand_mask = lab_lo
+            other_mask = lab_hi
+        else:
+            cand_mask = lab_hi
+            other_mask = lab_lo
+
+        n_lo = int(lab_lo.sum()); n_hi = int(lab_hi.sum())
+        cand_idx = np.where(cand_mask)[0]
+        other_idx = np.where(other_mask)[0]
+
+        if pool_ids is not None:
+            cand_idx_global = pool_ids[cand_idx]
+            other_idx_global = pool_ids[other_idx]
+        else:
+            cand_idx_global = None
+            other_idx_global = None
+
+        wav_lo = np.median(snips[c, :, lab_lo], axis=1) if n_lo > 0 else np.zeros(T, dtype=np.float32)
+        wav_hi = np.median(snips[c, :, lab_hi], axis=1) if n_hi > 0 else np.zeros(T, dtype=np.float32)
+        amp_lo = float(wav_lo.max() - wav_lo.min())
+        amp_hi = float(wav_hi.max() - wav_hi.min())
+        score_amp = max(amp_lo, amp_hi)
+
+        thr = 0.5 * (mu_lo + mu_hi)
+
+        out.append(dict(
+            sep=sep, chan=int(c), t=int(t_best),
+            vmin=vmin, vmax=vmax,
+            thr=float(thr),
+            mu_lo=float(mu_lo), mu_hi=float(mu_hi),
+            std_lo=float(std_lo), std_hi=float(std_hi),
+            n_lo=n_lo, n_hi=n_hi,
+            polarity=pol,
+            cand_mask=cand_mask, other_mask=other_mask,
+            cand_idx=cand_idx, other_idx=other_idx,
+            cand_idx_global=cand_idx_global, other_idx_global=other_idx_global,
+            amp_lo=amp_lo, amp_hi=amp_hi, score_amp=score_amp
+        ))
+
+    out.sort(key=lambda d: -d['sep'])
+    return out[:n_top]

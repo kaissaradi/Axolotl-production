@@ -28,6 +28,7 @@ from axolotl.waveform_utils import extract_snippets_fast_ram, estimate_lags_by_x
 from axolotl.clustering import cluster_spike_waveforms, select_cluster_with_largest_waveform
 from axolotl.subtraction import apply_residuals, subtract_pca_cluster_means_ram, subtract_scaled_template_ram
 from axolotl.comparison import compare_eis
+from axolotl.collision_diagnostics import median_ei_adaptive
 
 # ------------------------------------------------------------------------------
 # Helper functions for duplicate detection and merging

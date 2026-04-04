@@ -1,8 +1,9 @@
-"""collision_diagnostics.py
-Diagnostic, analysis, and plotting helpers for spike collision resolution.
+"""axolotl/collision_diagnostics.py
 
-These functions are useful for diagnostics/analysis but are NOT part of the
-core collision resolution pipeline (which lives in collision.py).
+Diagnostic, analysis, and plotting helpers extracted from collision.py.
+Core pipeline functions remain in collision.py.
+
+Imports score_active_set from collision for marginal_gain.
 """
 
 from __future__ import annotations
@@ -20,13 +21,13 @@ from .plotting import plot_ei_waveforms
 from .collision import score_active_set
 
 
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Metric helpers
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def delta_rms(x, y, weights):
-    rms_raw = np.sqrt((x**2     ).mean(axis=1))   # [C]
-    rms_res = np.sqrt(((x-y)**2).mean(axis=1))    # [C]
+    rms_raw = np.sqrt((x**2).mean(axis=1))        # [C]
+    rms_res = np.sqrt(((x - y)**2).mean(axis=1))  # [C]
     return np.sum(weights * (rms_res - rms_raw))
 
 
@@ -40,21 +41,17 @@ def best_shift_ei(trace_rw, trace_ei, max_shift=40):
     """
     L = len(trace_rw)
     scores = []
-
-    for lag in range(max_shift + 1):  # 0…40 inclusive
-        # EI shifted right: pad on left with zeros
+    for lag in range(max_shift + 1):
         ei_shifted = np.zeros_like(trace_ei)
         ei_shifted[lag:] = trace_ei[:L - lag]
-
         s = np.dot(trace_rw, ei_shifted)
         scores.append((lag, s))
-
     best_lag = max(scores, key=lambda x: x[1])[0]
     return best_lag
 
 
 def _peak_channel(ei):
-    """index of channel with largest |P2P| in EI"""
+    """Index of channel with largest |P2P| in EI."""
     return int(np.argmax(ei.ptp(axis=1)))
 
 
@@ -63,55 +60,59 @@ def _best_lag(raw_chan, ei_chan, peak_sample=40, max_lag=6):
     Dot-product lag search around ±max_lag
     so that the EI peak ends near `peak_sample`.
     """
-    # full x-corr
-    xcor  = correlate(raw_chan, ei_chan, mode='full')
-    lags  = np.arange(-len(raw_chan) + 1, len(raw_chan))
+    xcor = correlate(raw_chan, ei_chan, mode='full')
+    lags = np.arange(-len(raw_chan) + 1, len(raw_chan))
     lag_raw = lags[np.argmax(xcor)]
 
-    # keep EI peak inside window  (40 ± max_lag)
-    p_idx   = np.argmax(np.abs(ei_chan))
-    base    = len(raw_chan)//2 - p_idx          # shift that puts peak at centre
+    p_idx = np.argmax(np.abs(ei_chan))
+    base = len(raw_chan) // 2 - p_idx
     lag_low = base - max_lag
-    lag_hi  = base + max_lag
+    lag_hi = base + max_lag
     return int(np.clip(lag_raw, lag_low, lag_hi))
 
 
-def marginal_gain(
-    active_dict, union_chans, raw_local, unit_info, p2p_all, *,
-    mask_thr=5.0, beta=0.5, max_lag=6, peak_sample=40,
-    score_fn=score_active_set
-):
+def marginal_gain(active_dict,
+                  union_chans,
+                  raw_local,
+                  unit_info,
+                  p2p_all,
+                  *,
+                  mask_thr=5.0,
+                  beta=0.5,
+                  max_lag=6,
+                  peak_sample=40,
+                  score_fn=score_active_set):
     """
     Return (uid, best_lag, gain) of the *first* unit that improves
     Δ-RMS when added to `active_dict`.  If none do, return None.
     """
     from collections import OrderedDict
 
-    base_score = score_fn(active_dict, union_chans, raw_local, unit_info, p2p_all,
+    base_score = score_fn(active_dict, union_chans,
+                          raw_local, unit_info, p2p_all,
                           mask_thr=mask_thr, beta=beta)
 
     for uid in unit_info.keys():
         if uid in active_dict:
             continue
 
-        ei      = unit_info[uid]["ei"]
-        pch     = _peak_channel(ei)
+        ei = unit_info[uid]["ei"]
+        pch = _peak_channel(ei)
 
         if pch not in union_chans:
             continue
-        c_idx    = union_chans.index(pch)
+        c_idx = union_chans.index(pch)
 
-        lag = _best_lag(raw_local[c_idx], ei[pch], peak_sample=peak_sample, max_lag=max_lag)
+        lag = _best_lag(raw_local[c_idx], ei[pch],
+                        peak_sample=peak_sample,
+                        max_lag=max_lag)
 
         trial = OrderedDict(active_dict)
         trial[uid] = lag
 
-        new_score = score_fn(trial, union_chans, raw_local, unit_info, p2p_all,
+        new_score = score_fn(trial, union_chans,
+                             raw_local, unit_info, p2p_all,
                              mask_thr=mask_thr, beta=beta)
-
-        if uid == 'unit_14':
-            print(uid)
-            print(new_score, base_score)
 
         gain = new_score - base_score
         if gain > 0:
@@ -120,12 +121,12 @@ def marginal_gain(
     return None
 
 
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Bimodality / clustering
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def per_channel_gmm_bimodality_simple(ei, snips, n_top=5, min_sep=2.0,
-                               include_ref40=True, win40=3, min_cluster_size=20):
+                                      include_ref40=True, win40=3, min_cluster_size=20):
     """
     For each channel, evaluate 2-GMM separation at multiple candidate times:
       - channel's own t_peak = argmax |ei[c]|
@@ -170,8 +171,13 @@ def per_channel_gmm_bimodality_simple(ei, snips, n_top=5, min_sep=2.0,
 
 
 def per_channel_hist_otsu_candidates(
-    ei: np.ndarray, snips: np.ndarray, n_top: int = 5, *,
-    sim_thr: float = 0.90, win40: int = 2, bins: int = 64,
+    ei: np.ndarray,
+    snips: np.ndarray,
+    n_top: int = 5,
+    *,
+    sim_thr: float = 0.90,
+    win40: int = 2,
+    bins: int = 64,
     min_cluster_size: int = 10
 ):
     C, T, N = snips.shape
@@ -237,7 +243,8 @@ def per_channel_hist_otsu_candidates(
     return results[:n_top]
 
 
-def bimodality_probe(snips_cand, c_best, t_best, SHOW_DIAGNOSTICS, offsets=(-5,-3,-1,1,3,5,7,9,11)):
+def bimodality_probe(snips_cand, c_best, t_best, SHOW_DIAGNOSTICS,
+                     offsets=(-5, -3, -1, 1, 3, 5, 7, 9, 11)):
     T, N = snips_cand.shape[1], snips_cand.shape[2]
     reports = []
     for d in offsets:
@@ -250,15 +257,15 @@ def bimodality_probe(snips_cand, c_best, t_best, SHOW_DIAGNOSTICS, offsets=(-5,-
         g2 = GaussianMixture(2, reg_covar=1e-6, random_state=0).fit(X)
         bic1 = float(g1.bic(X)); bic2 = float(g2.bic(X)); db = bic1 - bic2
         idx = np.argsort(g2.means_.ravel())
-        mu  = g2.means_.ravel()[idx]
-        sd  = np.sqrt(g2.covariances_.reshape(-1))[idx]
-        wt  = g2.weights_[idx]
-        dpr = float(abs(mu[1]-mu[0]) / (np.sqrt(0.5*(sd[0]**2+sd[1]**2))+1e-12))
+        mu = g2.means_.ravel()[idx]
+        sd = np.sqrt(g2.covariances_.reshape(-1))[idx]
+        wt = g2.weights_[idx]
+        dpr = float(abs(mu[1] - mu[0]) / (np.sqrt(0.5 * (sd[0]**2 + sd[1]**2)) + 1e-12))
         reports.append(dict(offset=d, sample=int(t), N=int(N),
                             bic1=bic1, bic2=bic2, delta_bic=float(db),
                             dprime=dpr, means=mu.astype(float),
                             stds=sd.astype(float), weights=wt.astype(float),
-                            sizes=(wt*N).round().astype(int)))
+                            sizes=(wt * N).round().astype(int)))
     if not reports:
         print(f"\nBIMODALITY PROBE: c={c_best}, t_best={t_best} → no valid offsets in {list(offsets)}")
         return None
@@ -287,9 +294,13 @@ def recursive_bimodal_split(
     """
     Repeatedly check bimodality and split the picked cluster on one channel/time,
     until it is no longer bimodal (on both probes) or the selected subcluster is too small.
-    """
-    from .waveform_utils import median_ei_adaptive
 
+    Returns:
+        cand_mask   : updated boolean mask on the CURRENT pool (global indices)
+        ei_cand     : median EI of the final picked cluster
+        n_splits    : number of successful splits performed
+        last_probe  : ('c','t','metric_val') tuple of the split that happened last (or None)
+    """
     n_splits = 0
     last_probe = None
 
@@ -363,53 +374,57 @@ def recursive_bimodal_split(
     return cand_mask, ei_cand, n_splits, last_probe
 
 
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Baseline / similarity
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
-def compute_global_baseline_mean(ei, early=20, late=20, cap_val=50, make_plots=False, baseline_thresh=10):
+def compute_global_baseline_mean(ei,
+                                 early=20,
+                                 late=20,
+                                 cap_val=50,
+                                 make_plots=False,
+                                 baseline_thresh=10):
     """
     Fast vectorised baseline-quality metric.
     Returns global_baseline_mean (float).
     """
     n_ch, n_t = ei.shape
 
-    p2p         = np.ptp(ei, axis=1)
+    p2p = np.ptp(ei, axis=1)
 
-    pos_idx     = np.argmax(ei, axis=1)
-    neg_idx     = np.argmin(ei, axis=1)
+    pos_idx = np.argmax(ei, axis=1)
+    neg_idx = np.argmin(ei, axis=1)
     pos_val_abs = ei[np.arange(n_ch), pos_idx]
     neg_val_abs = np.abs(ei[np.arange(n_ch), neg_idx])
 
-    use_pos     = pos_val_abs > neg_val_abs
-    peak_idx    = np.where(use_pos, pos_idx, neg_idx)
+    use_pos = pos_val_abs > neg_val_abs
+    peak_idx = np.where(use_pos, pos_idx, neg_idx)
 
     early_ok = peak_idx >= early
-    late_ok  = peak_idx <  (n_t - late)
+    late_ok = peak_idx < (n_t - late)
 
     early_block_mean = ei[:, :early].mean(axis=1)
-    early_block_max  = ei[:, :early].max(axis=1)
-    late_block_mean  = ei[:, -late:].mean(axis=1)
-    late_block_max   = ei[:, -late:].max(axis=1)
+    early_block_max = ei[:, :early].max(axis=1)
+    late_block_mean = ei[:, -late:].mean(axis=1)
+    late_block_max = ei[:, -late:].max(axis=1)
 
     early_mean = np.where(early_ok, early_block_mean, np.nan)
-    early_max  = np.where(early_ok, early_block_max,  np.nan)
-    late_mean  = np.where(late_ok,  late_block_mean,  np.nan)
-    late_max   = np.where(late_ok,  late_block_max,   np.nan)
+    early_max = np.where(early_ok, early_block_max, np.nan)
+    late_mean = np.where(late_ok, late_block_mean, np.nan)
+    late_max = np.where(late_ok, late_block_max, np.nan)
 
     abs_early_mean = np.abs(early_mean)
-    abs_late_mean  = np.abs(late_mean)
+    abs_late_mean = np.abs(late_mean)
 
-    bad_baseline_ch = (abs_early_mean > baseline_thresh) | \
-                      (abs_late_mean  > baseline_thresh)
-    n_bad_channels  = np.count_nonzero(bad_baseline_ch)
+    bad_baseline_ch = (abs_early_mean > baseline_thresh) | (abs_late_mean > baseline_thresh)
+    n_bad_channels = np.count_nonzero(bad_baseline_ch)
 
     baseline_means_all = np.concatenate([abs_early_mean[np.isfinite(early_mean)],
-                                         abs_late_mean [np.isfinite(late_mean)]])
-    baseline_max_all   = np.concatenate([np.abs(early_max[np.isfinite(early_max)]),
-                                         np.abs(late_max [np.isfinite(late_max)])])
+                                         abs_late_mean[np.isfinite(late_mean)]])
+    baseline_max_all = np.concatenate([np.abs(early_max[np.isfinite(early_max)]),
+                                       np.abs(late_max[np.isfinite(late_max)])])
 
-    global_baseline_mean     = baseline_means_all.mean()
+    global_baseline_mean = baseline_means_all.mean()
     global_baseline_max_mean = baseline_max_all.mean()
 
     if make_plots:
@@ -425,13 +440,13 @@ def compute_global_baseline_mean(ei, early=20, late=20, cap_val=50, make_plots=F
         axs[1].set_ylabel('Sample')
 
         axs[2].plot(early_mean, label='Early mean', color='green')
-        axs[2].plot(late_mean,  label='Late mean',  color='orange')
+        axs[2].plot(late_mean, label='Late mean', color='orange')
         axs[2].set_title('Baseline mean')
         axs[2].set_ylim(-cap_val, cap_val)
         axs[2].legend()
 
         axs[3].plot(early_max, label='Early max', color='green')
-        axs[3].plot(late_max,  label='Late max',  color='orange')
+        axs[3].plot(late_max, label='Late max', color='orange')
         axs[3].set_title('Baseline max')
         axs[3].set_ylim(-cap_val, cap_val)
         axs[3].legend()
@@ -448,11 +463,10 @@ def compute_global_baseline_mean(ei, early=20, late=20, cap_val=50, make_plots=F
 
 def ei_similarity(ei_a, ei_b):
     """
-    Cosine similarity (or your existing compare_ei) – range [0..1].
-    Higher ⇒ more alike.
+    Cosine similarity – range [0..1]. Higher ⇒ more alike.
     """
     a = ei_a.ravel(); b = ei_b.ravel()
-    return np.dot(a, b) / (np.linalg.norm(a)*np.linalg.norm(b) + 1e-9)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
 
 
 def median_ei_adaptive(snips, base=500):
@@ -460,17 +474,12 @@ def median_ei_adaptive(snips, base=500):
     Compute EI as the median of an adaptively sub-sampled set of spikes.
 
     snips : ndarray  [C, T, N]
-        Raw snippets (channels × time × spikes)
-
-    base  : int
-        Use every spike when N ≤ base.
-        For every additional `base` spikes, stride increases by 1.
-        i.e. stride = 1 + (N-1)//base
+    base  : int — use every spike when N ≤ base; stride increases by 1
+            for every additional `base` spikes.
 
     Returns
     -------
     ei_med : ndarray  [C, T]
-        Median EI computed on the sub-sampled snippets.
     """
     N = snips.shape[2]
     stride = 1 + (N - 1) // base
@@ -478,7 +487,16 @@ def median_ei_adaptive(snips, base=500):
     return ei_med.astype(snips.dtype, copy=False)
 
 
-def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_idx=None, depth=0):
+# ─────────────────────────────────────────────────────────────────────────────
+# Recursive cluster validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def verify_clusters_recursive(spike_times,
+                               snips_raw,
+                               params,
+                               target_chan,
+                               abs_idx=None,
+                               depth=0):
     """
     Returns list of dicts with keys:
         'inds'  – indices into *spike_times*
@@ -489,11 +507,11 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
     if abs_idx is None:
         abs_idx = np.arange(spike_times.size)
 
-    min_spikes     = params.get('min_spikes', 10)
-    baseline_cut   = params.get('baseline_cut', 2.0)
-    ei_sim_thr     = params.get('ei_sim_threshold', 0.9)
-    k_start        = params.get('k_start', 6)
-    k_refine       = params.get('k_refine', 3)
+    min_spikes = params.get('min_spikes', 10)
+    baseline_cut = params.get('baseline_cut', 2.0)
+    ei_sim_thr = params.get('ei_sim_threshold', 0.9)
+    k_start = params.get('k_start', 6)
+    k_refine = params.get('k_refine', 3)
 
     N = spike_times.size
     if N < min_spikes:
@@ -503,10 +521,10 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
 
     start = time.perf_counter()
     ei_parent = median_ei_adaptive(snips_raw)
-    elapsed = time.perf_counter() - start
+    peak_ch = np.argmin(ei_parent.min(axis=1))
 
-    peak_ch   = np.argmin(ei_parent.min(axis=1))
     ei_parent = np.ascontiguousarray(ei_parent, dtype=np.float32)
+
     gbm_parent = compute_global_baseline_mean(ei_parent)
     print(f"          parent gmb: {gbm_parent}")
 
@@ -530,9 +548,9 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
 
     snips_sel = snips_raw[chan_sel, :, :]
     C_sel = snips_sel.shape[0]
-    X = snips_sel.reshape(C_sel*T, N).T
+    X = snips_sel.reshape(C_sel * T, N).T
 
-    n_comp = min(7, X.shape[1]-1)
+    n_comp = min(7, X.shape[1] - 1)
     Xred = PCA(n_components=n_comp, svd_solver='randomized').fit_transform(X)
 
     labels = KMeans(k_split, n_init=5, random_state=depth).fit(Xred).labels_
@@ -544,8 +562,8 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
             continue
 
         snips_c = snips_raw[:, :, mask]
-        ei_c    = median_ei_adaptive(snips_c)
-        pk_c    = np.argmin(ei_c.min(axis=1))
+        ei_c = median_ei_adaptive(snips_c)
+        pk_c = np.argmin(ei_c.min(axis=1))
         if pk_c != target_chan:
             continue
 
@@ -555,19 +573,21 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
 
         print(f"            child gmb: {gbm_c}")
 
-        survivors.append({'mask': mask, 'ei': ei_c, 'gbm': gbm_c})
+        survivors.append({'mask': mask,
+                          'ei': ei_c,
+                          'gbm': gbm_c})
 
     if not survivors:
         return [{'inds': abs_idx, 'ei': ei_parent}]
 
     merged = []
-    taken  = np.zeros(len(survivors), dtype=bool)
+    taken = np.zeros(len(survivors), dtype=bool)
 
     for i, s_i in enumerate(survivors):
         if taken[i]:
             continue
         union_mask = s_i['mask'].copy()
-        for j, s_j in enumerate(survivors[i+1:], start=i+1):
+        for j, s_j in enumerate(survivors[i + 1:], start=i + 1):
             if taken[j]:
                 continue
             if ei_similarity(s_i['ei'], s_j['ei']) > ei_sim_thr:
@@ -578,31 +598,86 @@ def verify_clusters_recursive(spike_times, snips_raw, params, target_chan, abs_i
         snips_u = snips_raw[:, :, union_mask]
         merged.append({
             'mask': union_mask,
-            'ei':   median_ei_adaptive(snips_u),
-            'abs':  abs_idx[union_mask]
+            'ei': median_ei_adaptive(snips_u),
+            'abs': abs_idx[union_mask]
         })
 
     if len(merged) == 1:
-        return [{'inds': merged[0]['abs'], 'ei': merged[0]['ei']}]
+        return [{'inds': merged[0]['abs'],
+                 'ei': merged[0]['ei']}]
 
     out = []
     for child in merged:
-        idxs   = np.where(child['mask'])[0]
+        idxs = np.where(child['mask'])[0]
         st_sub = spike_times[idxs]
         sr_sub = snips_raw[:, :, child['mask']]
-        abs_sub = abs_idx[idxs]
         out.extend(
-            verify_clusters_recursive(st_sub, sr_sub, params, target_chan,
-                                      abs_idx=child['abs'], depth=depth+1)
+            verify_clusters_recursive(st_sub,
+                                      sr_sub,
+                                      params,
+                                      target_chan,
+                                      abs_idx=child['abs'],
+                                      depth=depth + 1)
         )
     return out
 
 
-# ------------------------------------------------------------------
-# Harm-map pipeline
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-correlation
+# ─────────────────────────────────────────────────────────────────────────────
 
-def select_template_channels(ei, p2p_thr=50.0, max_n=80, min_n=10, force_include_main=True):
+def xcorr_spike_times(st1, st2, max_lag=None, total_len=None):
+    """
+    MATLAB-style cross-correlation of two spike time lists (binary event vectors).
+
+    Parameters
+    ----------
+    st1, st2 : array-like
+        Spike times (sample indices).
+    max_lag : int or None
+        If given, restrict lags to [-max_lag, max_lag].
+    total_len : int or None
+        Total duration of recording (vector length).
+
+    Returns
+    -------
+    lags : ndarray
+    cc_norm : ndarray
+        Normalized cross-correlation coefficients.
+    """
+    st1 = np.asarray(st1, dtype=int)
+    st2 = np.asarray(st2, dtype=int)
+
+    if total_len is None:
+        total_len = max(st1.max() if st1.size > 0 else 0,
+                        st2.max() if st2.size > 0 else 0) + 1
+
+    vec1 = np.zeros(total_len, dtype=np.float32)
+    vec2 = np.zeros(total_len, dtype=np.float32)
+    vec1[st1] = 1
+    vec2[st2] = 1
+
+    cc_full = correlate(vec2, vec1, mode='full')
+    lags = correlation_lags(len(vec2), len(vec1), mode='full')
+
+    norm = np.sqrt(np.sum(vec1 ** 2) * np.sum(vec2 ** 2))
+    cc_norm = cc_full / norm if norm > 0 else cc_full * 0
+
+    if max_lag is not None:
+        keep = np.abs(lags) <= max_lag
+        lags = lags[keep]
+        cc_norm = cc_norm[keep]
+
+    return lags, cc_norm
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Harm-map pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+def select_template_channels(
+    ei, p2p_thr=50.0, max_n=80, min_n=10, force_include_main=True
+):
     """
     Return (channels, p2p) where channels are sorted by descending p2p.
     Ensures at least min_n channels by adding sub-threshold channels with highest p2p.
@@ -656,16 +731,23 @@ def roll_zero_2d(arr, shift):
     if shift == 0:
         out[:] = arr
     elif shift > 0:
-        out[:, shift:] = arr[:, :T-shift]
+        out[:, shift:] = arr[:, :T - shift]
     else:
         s = -shift
-        out[:, :T-s] = arr[:, s:]
+        out[:, :T - s] = arr[:, s:]
     return out
 
 
 def compute_harm_map_noamp(
-    ei, snips, p2p_thr=50.0, max_channels=80, min_channels=10,
-    lag_radius=3, weight_by_p2p=True, weight_beta=0.5, force_include_main=True,
+    ei,
+    snips,
+    p2p_thr=50.0,
+    max_channels=80,
+    min_channels=10,
+    lag_radius=3,
+    weight_by_p2p=True,
+    weight_beta=0.5,
+    force_include_main=True,
 ):
     C, T = ei.shape
     assert snips.shape[:2] == (C, T), "snips must be [C,T,N]"
@@ -714,7 +796,7 @@ def compute_harm_map_noamp(
     harm = np.take_along_axis(deltas, best_i[None, None, :], axis=0).squeeze(0)
 
     mean_delta_unweighted = harm.mean(axis=0)
-    mean_delta_weighted   = (harm * w[:, None]).sum(axis=0)
+    mean_delta_weighted = (harm * w[:, None]).sum(axis=0)
     p2p_sel = ptp[chans]
 
     out = {
@@ -732,7 +814,8 @@ def compute_harm_map_noamp(
 
 
 def compute_spike_gate(
-    res, *,
+    res,
+    *,
     thr_global=-2.0,
     thr_channel=0.0,
     min_good_frac=0.5,
@@ -744,14 +827,10 @@ def compute_spike_gate(
 ):
     """
     Returns:
-      accept_mask        : bool [N]
-      global_mean        : float [N]
-      n_good, n_bad      : ints [N]
-      frac_good          : float [N]
-      max_harm_delta     : float [N]
-      n_exceed_max_gap   : int   [N]
+      accept_mask, global_mean, n_good, n_bad, frac_good,
+      max_harm_delta, n_exceed_max_gap
     """
-    H   = res["harm_matrix"]
+    H = res["harm_matrix"]
     ptp = res["channel_ptp"]
     nch, N = H.shape
 
@@ -759,7 +838,7 @@ def compute_spike_gate(
     harm = (H > thr_channel)
 
     n_good = good.sum(axis=0)
-    n_bad  = harm.sum(axis=0)
+    n_bad = harm.sum(axis=0)
     frac_good = n_good / max(1, nch)
 
     if weighted:
@@ -787,7 +866,7 @@ def compute_spike_gate(
 
     accept = (
         (global_mean < thr_global) &
-        (frac_good   >= min_good_frac) &
+        (frac_good >= min_good_frac) &
         harm_cap_ok &
         exceed_ok
     )
@@ -814,8 +893,9 @@ def build_delta_prototype(
 ):
     """
     Learn per-channel expected Δ profile (mu_c) and robust scale (mad_c) from very-good spikes.
+    Returns dict with mu_c, mad_c, core_idx, periph_idx, weights, ptp, idx_good (global).
     """
-    H   = res["harm_matrix"]
+    H = res["harm_matrix"]
     ptp = res["channel_ptp"]
     mdw = res["mean_delta_weighted"]
     nch, N = H.shape
@@ -851,7 +931,7 @@ def build_delta_prototype(
     k = max(1, min(k, max(1, nch - min_periph)))
 
     order_by_ptp = np.argsort(ptp)[::-1]
-    core_idx   = order_by_ptp[:k]
+    core_idx = order_by_ptp[:k]
     periph_idx = order_by_ptp[k:]
 
     w = (ptp.astype(float) ** beta)
@@ -869,8 +949,9 @@ def build_delta_prototype(
 def build_ideal_delta(res, *, subset=None, good_thresh=-5.0, top_frac=0.25):
     """
     Learn per-channel 'ideal' Δ profile from a trusted subset of spikes.
+    Returns per-channel: mu_c, var_c, max_trusted, trusted_idx.
     """
-    H   = res["harm_matrix"]
+    H = res["harm_matrix"]
     mdw = res["mean_delta_weighted"]
     nch, N = H.shape
 
@@ -889,8 +970,8 @@ def build_ideal_delta(res, *, subset=None, good_thresh=-5.0, top_frac=0.25):
     trusted = pool[good_local]
     G = H[:, trusted]
 
-    mu_c        = np.median(G, axis=1)
-    var_c       = np.var(G, axis=1)
+    mu_c = np.median(G, axis=1)
+    var_c = np.var(G, axis=1)
     max_trusted = np.max(G, axis=1)
 
     return {
@@ -903,7 +984,8 @@ def build_ideal_delta(res, *, subset=None, good_thresh=-5.0, top_frac=0.25):
 
 def score_against_prototype(res, proto, *, harm_cap=10.0, tau_core=1.0, tau_periph=1.5):
     """
-    For each spike, compute S_core/S_periph from z-shortfalls vs the prototype.
+    For each spike, compute S_core/S_periph from z-shortfalls vs the prototype,
+    plus max harmful Δ for your cap. Labels: {'good','near_miss','bad'}.
     """
     H = res["harm_matrix"]
     mu, mad = proto["mu_c"], proto["mad_c"]
@@ -915,12 +997,12 @@ def score_against_prototype(res, proto, *, harm_cap=10.0, tau_core=1.0, tau_peri
     def safe_mean(arr, axis=0):
         return np.nanmean(np.where(np.isfinite(arr), arr, np.nan), axis=axis)
 
-    S_core   = safe_mean(zshort[core, :], axis=0)
+    S_core = safe_mean(zshort[core, :], axis=0)
     S_periph = safe_mean(zshort[periph, :], axis=0) if periph.size > 0 else np.zeros(H.shape[1])
 
     harm_mask = (H > 0)
     max_harm = np.where(harm_mask, H, -np.inf).max(axis=0)
-    cap_ok   = (max_harm <= harm_cap) | ~np.isfinite(max_harm)
+    cap_ok = (max_harm <= harm_cap) | ~np.isfinite(max_harm)
 
     labels = np.empty(H.shape[1], dtype=object); labels[:] = "bad"
     good_core = (S_core <= tau_core) & cap_ok
@@ -935,24 +1017,13 @@ def score_against_prototype(res, proto, *, harm_cap=10.0, tau_core=1.0, tau_peri
     }
 
 
-def _sanitize_order(order, N):
-    if order is None:
-        return np.arange(N, dtype=int)
-    o = np.asarray(order, dtype=int).ravel()
-    o = o[(o >= 0) & (o < N)]
-    seen = set(); safe = []
-    for i in o:
-        if i not in seen:
-            seen.add(i); safe.append(i)
-    return np.asarray(safe if len(safe)>0 else np.arange(N, dtype=int))
-
-
 def compute_profile_deviation_metrics(res, ideal, *, var_threshold=3.0, exceed_thresh=25.0):
     """
-    Compute per-spike diagnostics from res and per-channel 'ideal' stats.
+    From res and per-channel 'ideal' stats, compute per-spike diagnostics.
+    Returns dict of 1D arrays length N.
     """
-    H   = res["harm_matrix"]
-    mu  = ideal["mu_c"]
+    H = res["harm_matrix"]
+    mu = ideal["mu_c"]
     var = ideal["var_c"]
     mxt = ideal["max_trusted"]
     nch, N = H.shape
@@ -971,10 +1042,10 @@ def compute_profile_deviation_metrics(res, ideal, *, var_threshold=3.0, exceed_t
     pos = (H > 0.0)
     sum_pos = (H * pos).sum(axis=0)
     cnt_pos = pos.sum(axis=0)
-    mean_pos_delta = np.divide(sum_pos, np.maximum(cnt_pos, 1), where=(cnt_pos>0))
+    mean_pos_delta = np.divide(sum_pos, np.maximum(cnt_pos, 1), where=(cnt_pos > 0))
     sum_mxt_on_pos = (mxt[:, None] * pos).sum(axis=0)
-    mean_mxt_on_pos = np.divide(sum_mxt_on_pos, np.maximum(cnt_pos, 1), where=(cnt_pos>0))
-    mean_pos_delta_gap = np.where(cnt_pos>0, (mean_pos_delta - mean_mxt_on_pos), 0.0)
+    mean_mxt_on_pos = np.divide(sum_mxt_on_pos, np.maximum(cnt_pos, 1), where=(cnt_pos > 0))
+    mean_pos_delta_gap = np.where(cnt_pos > 0, (mean_pos_delta - mean_mxt_on_pos), 0.0)
 
     n_exceed_max_gap = (delta_minus_max > float(exceed_thresh)).sum(axis=0).astype(int)
 
@@ -990,7 +1061,8 @@ def compute_profile_deviation_metrics(res, ideal, *, var_threshold=3.0, exceed_t
 
 def compute_deviation_signals(res, mu_c, *, top_k=5):
     """
-    dev_matrix = actualΔ − idealΔ (positive = worse than ideal)
+    dev_matrix = actualΔ − idealΔ (positive = worse than ideal).
+    Returns per-spike: dev_mean_all, dev_mean_topk_bad, pos_counts.
     """
     H = res["harm_matrix"]
     D = H - mu_c[:, None]
@@ -1012,9 +1084,104 @@ def compute_deviation_signals(res, mu_c, *, top_k=5):
     }
 
 
-def reassign_leftovers_to_existing_templates(accepted_eis, snips_pool, spike_times_pool, pool_ids, SHOW_DIAGNOSTICS, cfg: SimpleNamespace):
+def _sanitize_order(order, N):
+    if order is None:
+        return np.arange(N, dtype=int)
+    o = np.asarray(order, dtype=int).ravel()
+    o = o[(o >= 0) & (o < N)]
+    seen = set(); safe = []
+    for i in o:
+        if i not in seen:
+            seen.add(i); safe.append(i)
+    return np.asarray(safe if len(safe) > 0 else np.arange(N, dtype=int))
+
+
+def _help_harm_by_spike(res, thr=0.0, spike_order=None, weighted=True, weight_beta=0.5):
+    """
+    Returns per-spike counts and (weighted) averages for 'help' (Δ<thr) and 'harm' (Δ>thr).
+    """
+    H = res["harm_matrix"]
+    ptp = res["channel_ptp"]
+    nch, N = H.shape
+
+    if spike_order is None:
+        order = np.arange(N)
+    else:
+        order = np.asarray(spike_order, dtype=int)
+    H = H[:, order]
+
+    if weighted:
+        w = (ptp.astype(float) ** weight_beta)
+    else:
+        w = np.ones_like(ptp, dtype=float)
+
+    help_mask = (H < thr)
+    harm_mask = (H > thr)
+
+    n_help = help_mask.sum(axis=0)
+    n_harm = harm_mask.sum(axis=0)
+
+    w_col_help = w[:, None] * help_mask
+    w_col_harm = w[:, None] * harm_mask
+    denom_help = w_col_help.sum(axis=0)
+    denom_harm = w_col_harm.sum(axis=0)
+    mean_help = (H * w[:, None] * help_mask).sum(axis=0) / np.where(denom_help > 0, denom_help, np.nan)
+    mean_harm = (H * w[:, None] * harm_mask).sum(axis=0) / np.where(denom_harm > 0, denom_harm, np.nan)
+
+    return {
+        "order": order,
+        "n_help": n_help, "n_harm": n_harm,
+        "mean_help": mean_help, "mean_harm": mean_harm
+    }
+
+
+def _wilson_lower_bound(k, n, z=1.96):
+    """Wilson score lower bound for a proportion, good for small N."""
+    if n <= 0:
+        return np.nan
+    phat = k / n
+    denom = 1.0 + (z * z) / n
+    center = phat + (z * z) / (2 * n)
+    spread = z * np.sqrt((phat * (1.0 - phat) + (z * z) / (4 * n)) / n)
+    return (center - spread) / denom
+
+
+def lag_metrics_from_res(res, mask=None, central_band=1, z=1.96):
+    """
+    Compute lag metrics from compute_harm_map_noamp output.
+      central_LB: Wilson lower bound of P(|lag|<=central_band)
+      edge_frac : fraction at min/max lag of the bank
+      mad       : median absolute deviation (around median lag)
+    """
+    best = np.asarray(res["best_lag_per_spike"])
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        best = best[mask]
+    N = best.size
+    if N == 0:
+        return {"N": 0, "central_LB": np.nan, "edge_frac": np.nan, "mad": np.nan}
+
+    lags = np.asarray(res["lags"])
+    lmin, lmax = lags.min(), lags.max()
+
+    central = np.abs(best) <= central_band
+    central_LB = _wilson_lower_bound(int(central.sum()), N, z=z)
+
+    edge_frac = np.mean((best == lmin) | (best == lmax))
+
+    med = np.median(best)
+    mad = np.median(np.abs(best - med))
+
+    return {"N": int(N), "central_LB": float(central_LB), "edge_frac": float(edge_frac), "mad": float(mad)}
+
+
+def reassign_leftovers_to_existing_templates(
+    accepted_eis, snips_pool, spike_times_pool, pool_ids, SHOW_DIAGNOSTICS, cfg: SimpleNamespace
+):
     """
     Try to place leftover spikes onto already-accepted templates.
+    Uses the same harm/gate as elsewhere. Does NOT recalc EIs.
+    Returns updated (snips_pool, spike_times_pool, pool_ids, placed_total).
     """
     placed_total = 0
     if (snips_pool.shape[2] == 0) or (len(accepted_eis) == 0):
@@ -1022,7 +1189,8 @@ def reassign_leftovers_to_existing_templates(accepted_eis, snips_pool, spike_tim
 
     while True:
         N = snips_pool.shape[2]
-        if N == 0: break
+        if N == 0:
+            break
         avail = np.ones(N, dtype=bool)
         placed_this_pass = 0
 
@@ -1030,8 +1198,10 @@ def reassign_leftovers_to_existing_templates(accepted_eis, snips_pool, spike_tim
             ei_t = tpl['ei']
             res = compute_harm_map_noamp(
                 ei_t, snips_pool,
-                p2p_thr=cfg.HARM_P2P_THR, max_channels=cfg.HARM_MAX_CHANNELS, min_channels=cfg.HARM_MIN_CHANNELS,
-                lag_radius=cfg.HARM_LAG_RADIUS, weight_by_p2p=cfg.WEIGHT_BY_P2P, weight_beta=cfg.WEIGHT_BETA
+                p2p_thr=cfg.HARM_P2P_THR, max_channels=cfg.HARM_MAX_CHANNELS,
+                min_channels=cfg.HARM_MIN_CHANNELS,
+                lag_radius=cfg.HARM_LAG_RADIUS, weight_by_p2p=cfg.WEIGHT_BY_P2P,
+                weight_beta=cfg.WEIGHT_BETA
             )
             gate = compute_spike_gate(
                 res,
@@ -1042,8 +1212,9 @@ def reassign_leftovers_to_existing_templates(accepted_eis, snips_pool, spike_tim
             acc = (gate["accept_mask"] & avail)
             n_acc = int(acc.sum())
             if n_acc > 0:
-                accepted_eis[ti]['spike_times'] = np.concatenate([accepted_eis[ti]['spike_times'],
-                                                                   spike_times_pool[acc]])
+                accepted_eis[ti]['spike_times'] = np.concatenate(
+                    [accepted_eis[ti]['spike_times'], spike_times_pool[acc]]
+                )
                 avail[acc] = False
                 placed_this_pass += n_acc
                 if SHOW_DIAGNOSTICS:
@@ -1052,30 +1223,31 @@ def reassign_leftovers_to_existing_templates(accepted_eis, snips_pool, spike_tim
         if placed_this_pass == 0:
             break
 
-        snips_pool       = snips_pool[:, :, avail]
+        snips_pool = snips_pool[:, :, avail]
         spike_times_pool = spike_times_pool[avail]
-        pool_ids         = pool_ids[avail]
-        placed_total    += placed_this_pass
+        pool_ids = pool_ids[avail]
+        placed_total += placed_this_pass
 
     if SHOW_DIAGNOSTICS:
         print(f"Reassignment placed {placed_total} spikes into existing templates.")
     return snips_pool, spike_times_pool, pool_ids, placed_total
 
 
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Plotting
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def plot_harm_heatmap(result, sort_by_ptp=True, spike_order=None, vclip=None, title=None,
                       vline_at=None, vline_kwargs=None):
-    H   = result["harm_matrix"]
+    H = result["harm_matrix"]
     ptp = result["channel_ptp"]
 
-    chan_order  = np.argsort(-ptp) if sort_by_ptp else np.arange(H.shape[0])
+    chan_order = np.argsort(-ptp) if sort_by_ptp else np.arange(H.shape[0])
     if spike_order is None:
         spike_order = np.arange(H.shape[1])
     else:
         spike_order = np.asarray(spike_order, dtype=int)
+
     Hs = H[chan_order][:, spike_order]
 
     if vclip is None:
@@ -1121,45 +1293,6 @@ def plot_spike_delta_summary(result, weighted=True, bins=60, title=None):
     if title:
         plt.title(title)
     plt.tight_layout()
-
-
-def _help_harm_by_spike(res, thr=0.0, spike_order=None, weighted=True, weight_beta=0.5):
-    """
-    Returns per-spike counts and (weighted) averages for 'help' (Δ<thr) and 'harm' (Δ>thr).
-    """
-    H   = res["harm_matrix"]
-    ptp = res["channel_ptp"]
-    nch, N = H.shape
-
-    if spike_order is None:
-        order = np.arange(N)
-    else:
-        order = np.asarray(spike_order, dtype=int)
-    H = H[:, order]
-
-    if weighted:
-        w = (ptp.astype(float) ** weight_beta)
-    else:
-        w = np.ones_like(ptp, dtype=float)
-
-    help_mask = (H <  thr)
-    harm_mask = (H >  thr)
-
-    n_help = help_mask.sum(axis=0)
-    n_harm = harm_mask.sum(axis=0)
-
-    w_col_help = w[:, None] * help_mask
-    w_col_harm = w[:, None] * harm_mask
-    denom_help = w_col_help.sum(axis=0)
-    denom_harm = w_col_harm.sum(axis=0)
-    mean_help = (H * w[:, None] * help_mask).sum(axis=0) / np.where(denom_help > 0, denom_help, np.nan)
-    mean_harm = (H * w[:, None] * harm_mask).sum(axis=0) / np.where(denom_harm > 0, denom_harm, np.nan)
-
-    return {
-        "order": order,
-        "n_help": n_help, "n_harm": n_harm,
-        "mean_help": mean_help, "mean_harm": mean_harm
-    }
 
 
 def plot_help_harm_lines(res, thr=0.0, spike_order=None, weighted=True, weight_beta=0.5, title=None):
@@ -1249,7 +1382,7 @@ def plot_help_harm_scatter_swapped(
 def plot_ei_quick(ei, ei_positions, title, channel_of_interest, scale=90):
     plt.figure(figsize=(18, 8))
     plot_ei_waveforms(
-        [ei], ei_positions,
+        ei, ei_positions,
         ref_channel=channel_of_interest,
         scale=scale, box_height=1, box_width=50,
         colors='black', aspect=0.5)
@@ -1257,26 +1390,32 @@ def plot_ei_quick(ei, ei_positions, title, channel_of_interest, scale=90):
     plt.show()
 
 
-def plot_deviation_lines(res, ideal, *, var_threshold=3.0, exceed_thresh=25.0, spike_order=None, title=None):
+def plot_deviation_lines(res, ideal, *, var_threshold=3.0, exceed_thresh=25.0,
+                         spike_order=None, title=None):
     """
-    Panels for deviation diagnostics.
+    Panels:
+      [0] counts per spike
+      [1] gap magnitudes
+      [2] exceed count
     """
     N = res["harm_matrix"].shape[1]
     order = _sanitize_order(spike_order, N)
 
-    metrics = compute_profile_deviation_metrics(res, ideal, var_threshold=var_threshold, exceed_thresh=exceed_thresh)
+    metrics = compute_profile_deviation_metrics(
+        res, ideal, var_threshold=var_threshold, exceed_thresh=exceed_thresh
+    )
 
     x = np.arange(order.size)
     fig, ax = plt.subplots(1, 3, figsize=(20, 2), sharex=True)
 
     ax[0].plot(x, metrics["n_gt_mu_plus_varthr"][order], label=f"#(Δ > μ + {var_threshold}·var)")
-    ax[0].plot(x, metrics["n_gt_half_max"][order],         label="#(Δ > 0.5·max_trusted)")
-    ax[0].plot(x, metrics["n_pos_when_trusted_lt0"][order],label="#(Δ>0 where max_trusted<0)")
+    ax[0].plot(x, metrics["n_gt_half_max"][order], label="#(Δ > 0.5·max_trusted)")
+    ax[0].plot(x, metrics["n_pos_when_trusted_lt0"][order], label="#(Δ>0 where max_trusted<0)")
     ax[0].set_ylabel("# channels"); ax[0].set_xlabel("Spike index"); ax[0].grid(True, alpha=0.25)
     ax[0].legend(loc="upper right", fontsize=8)
 
-    ax[1].plot(x, metrics["max_delta_minus_max"][order],   label="max(Δ − max_trusted)")
-    ax[1].plot(x, metrics["mean_pos_delta_gap"][order],    label="mean(Δ − max_trusted) on Δ>0")
+    ax[1].plot(x, metrics["max_delta_minus_max"][order], label="max(Δ − max_trusted)")
+    ax[1].plot(x, metrics["mean_pos_delta_gap"][order], label="mean(Δ − max_trusted) on Δ>0")
     ax[1].axhline(0, ls="--", lw=1)
     ax[1].set_ylabel("Δ gap"); ax[1].set_xlabel("Spike index"); ax[1].grid(True, alpha=0.25)
     ax[1].legend(loc="upper right", fontsize=8)
@@ -1285,7 +1424,8 @@ def plot_deviation_lines(res, ideal, *, var_threshold=3.0, exceed_thresh=25.0, s
     ax[2].set_ylabel("# channels"); ax[2].set_xlabel("Spike index"); ax[2].grid(True, alpha=0.25)
     ax[2].legend(loc="upper right", fontsize=8)
 
-    if title: fig.suptitle(title)
+    if title:
+        fig.suptitle(title)
     fig.tight_layout()
 
     return metrics
@@ -1294,7 +1434,8 @@ def plot_deviation_lines(res, ideal, *, var_threshold=3.0, exceed_thresh=25.0, s
 def main_channel_traces(snips, ch, idx, title):
     traces = snips[ch, :, idx]
     plt.figure(figsize=(12, 2))
-    for tr in traces: plt.plot(tr, color='red', alpha=0.25)
+    for tr in traces:
+        plt.plot(tr, color='red', alpha=0.25)
     plt.plot(np.median(traces, axis=0), color='blue', lw=2)
     plt.title(title)
     plt.grid(True); plt.show()
@@ -1309,80 +1450,4 @@ def format_lag_metrics(metrics, central_band=1):
         return "Lag: N=0"
     return (f"Lag: MAD={metrics['mad']:.2f}, "
             f"central±{central_band} LB={metrics['central_LB']:.2f}, "
-            f"edge={100*metrics['edge_frac']:.1f}% (N={metrics['N']})")
-
-
-# ------------------------------------------------------------------
-# Cross-correlation
-# ------------------------------------------------------------------
-
-def xcorr_spike_times(st1, st2, max_lag=None, total_len=None):
-    """
-    MATLAB-style cross-correlation of two spike time lists (binary event vectors).
-    """
-    st1 = np.asarray(st1, dtype=int)
-    st2 = np.asarray(st2, dtype=int)
-
-    if total_len is None:
-        total_len = max(st1.max() if st1.size > 0 else 0,
-                        st2.max() if st2.size > 0 else 0) + 1
-
-    vec1 = np.zeros(total_len, dtype=np.float32)
-    vec2 = np.zeros(total_len, dtype=np.float32)
-    vec1[st1] = 1
-    vec2[st2] = 1
-
-    cc_full = correlate(vec2, vec1, mode='full')
-    lags = correlation_lags(len(vec2), len(vec1), mode='full')
-
-    norm = np.sqrt(np.sum(vec1 ** 2) * np.sum(vec2 ** 2))
-    cc_norm = cc_full / norm if norm > 0 else cc_full * 0
-
-    if max_lag is not None:
-        keep = np.abs(lags) <= max_lag
-        lags = lags[keep]
-        cc_norm = cc_norm[keep]
-
-    return lags, cc_norm
-
-
-# ------------------------------------------------------------------
-# Lag metrics
-# ------------------------------------------------------------------
-
-def _wilson_lower_bound(k, n, z=1.96):
-    """Wilson score lower bound for a proportion, good for small N."""
-    if n <= 0:
-        return np.nan
-    phat = k / n
-    denom = 1.0 + (z*z)/n
-    center = phat + (z*z)/(2*n)
-    spread = z * np.sqrt((phat*(1.0 - phat) + (z*z)/(4*n)) / n)
-    return (center - spread) / denom
-
-
-def lag_metrics_from_res(res, mask=None, central_band=1, z=1.96):
-    """
-    Compute lag metrics from compute_harm_map_noamp output.
-    """
-    best = np.asarray(res["best_lag_per_spike"])
-    if mask is not None:
-        mask = np.asarray(mask, dtype=bool)
-        best = best[mask]
-    N = best.size
-    if N == 0:
-        return {"N": 0, "central_LB": np.nan, "edge_frac": np.nan, "mad": np.nan}
-
-    lags = np.asarray(res["lags"])
-    lmin, lmax = lags.min(), lags.max()
-
-    central = np.abs(best) <= central_band
-    central_LB = _wilson_lower_bound(int(central.sum()), N, z=z)
-
-    edge_frac = np.mean((best == lmin) | (best == lmax))
-
-    med = np.median(best)
-    mad = np.median(np.abs(best - med))
-
-    return {"N": int(N), "central_LB": float(central_LB), "edge_frac": float(edge_frac), "mad": float(mad)}
-
+            f"edge={100 * metrics['edge_frac']:.1f}% (N={metrics['N']})")
