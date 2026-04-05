@@ -2,9 +2,9 @@
 
 paths:
   # For Litke mode, point this to the folder containing your 2-minute chunked .bin/.dat files
-  raw_data_path: "/path/to/your/litke/chunks/folder/"
-  channel_map_path: "path/to/channel_map.npy"
-  output_dir: "output_results/"
+  raw_data_path: "/home/kais/Documents/Development/data/raw/20231031A/data000/"
+  channel_map_path: "/home/kais/Downloads/60umarray/channel_map.npy"
+  output_dir: "/home/kais/Documents/output_results/"
 
 recording:
   # The format flag triggers the VirtualLitkeArray in io.py
@@ -34,6 +34,6 @@ preprocessing:
 # post_merge_duplicates: True
 
 testing:
-  enabled: False
-  duration_sec: 60
-  max_units: 15
+  enabled: True
+  duration_sec: 30
+  max_units: 10

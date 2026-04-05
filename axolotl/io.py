@@ -91,7 +91,7 @@ class VirtualLitkeArray:
                 
                 # Memory map the current chunk file
                 # Assumes standard (Time, Channels) multiplexed binary format
-                mmap_data = np.memmap(fname, dtype=self.dtype, mode='r').reshape(-1, self.n_channels_raw)
+                mmap_data = np.memmap(fname, dtype=self.dtype, mode='r', shape=(length, self.n_channels_raw))
                 
                 # Extract the valid time window and simultaneously drop the TTL and dead channels
                 chunk = mmap_data[read_start:read_stop, self.channel_indices]
@@ -116,11 +116,36 @@ class VirtualLitkeArray:
 
 
 def load_litke_folder(folder_path: str, n_channels_raw: int, dtype: str = 'int16', 
-                      max_samples: int = None, connected_electrodes: list = None) -> VirtualLitkeArray:
+                      max_samples: int = None, connected_electrodes: list = None):
     """
-    Initializes a Virtual Array across a folder of chunked Litke binary files.
+    Initializes a Virtual Array across a folder of chunked Litke binary files,
+    and copies it into a writable temporary memmap for safe pipeline processing.
     """
-    return VirtualLitkeArray(folder_path, n_channels_raw, dtype, max_samples, connected_electrodes)
+    # 1. Map the read-only chunks
+    virt_array = VirtualLitkeArray(folder_path, n_channels_raw, dtype, max_samples, connected_electrodes)
+    
+    # 2. Create a temporary file to hold the writable memory-mapped copy
+    print(f"Creating a writable temporary copy of Litke chunks...")
+    temp_fp = tempfile.NamedTemporaryFile(suffix=".mmap", dir=folder_path, delete=False)
+    temp_path = temp_fp.name
+    temp_fp.close() # Close the file handle so memmap can take over
+
+    # 3. Create the writable memmap
+    writable_data = np.memmap(temp_path, dtype=virt_array.dtype, mode='w+', shape=virt_array.shape, order='C')
+    
+    # 4. Copy the data over in chunks so we don't blow up your RAM
+    chunk_size = 100_000
+    for start in range(0, virt_array.total_samples, chunk_size):
+        end = min(start + chunk_size, virt_array.total_samples)
+        writable_data[start:end] = virt_array[start:end]
+        
+    writable_data.flush()
+    print(f"Litke data mapped successfully into a writable copy at: {temp_path}")
+    
+    # 5. Attach the out-channel count so run_axolotl.py can read it
+    writable_data.n_channels_out = virt_array.n_channels_out
+    
+    return writable_data
 
 
 def load_raw_binary(data_path: str, n_channels: int, dtype: str = 'int16', max_samples: int = None) -> np.ndarray:
