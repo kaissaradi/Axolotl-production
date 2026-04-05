@@ -242,12 +242,26 @@ def save_phy_results(
     spike_times: np.ndarray,
     spike_clusters: np.ndarray,
     templates: np.ndarray,
-    amplitudes: np.ndarray,
     channel_map: np.ndarray,
     config: dict
 ):
     """
     Saves spike sorting results in a Phy-compatible format.
+
+    Parameters
+    ----------
+    output_dir : str
+        The directory where results will be saved.
+    spike_times : np.ndarray, shape (n_spikes,)
+        The sample index of each detected spike.
+    spike_clusters : np.ndarray, shape (n_spikes,)
+        The cluster ID assigned to each spike.
+    templates : np.ndarray, shape (n_units, n_samples, n_channels)
+        The mean waveform (EI) for each unit.
+    channel_map : np.ndarray
+        The channel map array.
+    config : dict
+        The configuration dictionary used for the run.
     """
     print(f"Saving Phy-compatible results to: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
@@ -255,28 +269,12 @@ def save_phy_results(
     np.save(os.path.join(output_dir, 'spike_times.npy'), spike_times.astype(np.int64))
     np.save(os.path.join(output_dir, 'spike_clusters.npy'), spike_clusters.astype(np.int32))
     np.save(os.path.join(output_dir, 'templates.npy'), templates.astype(np.float32))
-    
-    # Kilosort/Phy splits logical channel map and physical positions
-    np.save(os.path.join(output_dir, 'channel_map.npy'), np.arange(len(channel_map), dtype=np.int32))
-    np.save(os.path.join(output_dir, 'channel_positions.npy'), channel_map.astype(np.float64))
-
-    # Save real amplitudes and spoof spike_templates
-    np.save(os.path.join(output_dir, 'amplitudes.npy'), amplitudes.astype(np.float32))
-    np.save(os.path.join(output_dir, 'spike_templates.npy'), spike_clusters.astype(np.int32))
+    np.save(os.path.join(output_dir, 'channel_map.npy'), channel_map)
 
     # Save the config file for reproducibility
     with open(os.path.join(output_dir, 'params.yml'), 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
         
-    # Create params.py for Phy
-    with open(os.path.join(output_dir, 'params.py'), 'w') as f:
-        f.write(f"dat_path = 'dummy.dat'\n")
-        f.write(f"n_channels_dat = {len(channel_map)}\n")
-        f.write(f"dtype = '{config['recording']['dtype']}'\n")
-        f.write(f"offset = 0\n")
-        f.write(f"sample_rate = {config['recording']['sampling_rate']}\n")
-        f.write(f"hp_filtered = False\n")
-
     # --- Create and save cluster_group.tsv ---
     print("Creating cluster_group.tsv...")
     unique_clusters = np.unique(spike_clusters)
