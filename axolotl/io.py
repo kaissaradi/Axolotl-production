@@ -272,22 +272,23 @@ def save_phy_results(
     config: dict
 ):
     """
-    Saves spike sorting results in a Phy-compatible format.
+    Saves spike sorting results in a strict Phy/Kilosort-compatible format.
     """
     print(f"Saving Phy-compatible results to: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
     
-    np.save(os.path.join(output_dir, 'spike_times.npy'), spike_times.astype(np.int64))
-    np.save(os.path.join(output_dir, 'spike_clusters.npy'), spike_clusters.astype(np.int32))
+    # Kilosort natively saves these arrays as column vectors (N, 1)
+    np.save(os.path.join(output_dir, 'spike_times.npy'), spike_times.astype(np.int64).reshape(-1, 1))
+    np.save(os.path.join(output_dir, 'spike_clusters.npy'), spike_clusters.astype(np.int32).reshape(-1, 1))
     np.save(os.path.join(output_dir, 'templates.npy'), templates.astype(np.float32))
     
-    # Kilosort/Phy splits logical channel map and physical positions
-    np.save(os.path.join(output_dir, 'channel_map.npy'), np.arange(len(channel_map), dtype=np.int32))
+    # REVERTED: Your GUI expects the 2D X/Y coordinates directly inside channel_map.npy
+    np.save(os.path.join(output_dir, 'channel_map.npy'), channel_map)
     np.save(os.path.join(output_dir, 'channel_positions.npy'), channel_map.astype(np.float64))
 
-    # Save real amplitudes and spoof spike_templates
-    np.save(os.path.join(output_dir, 'amplitudes.npy'), amplitudes.astype(np.float32))
-    np.save(os.path.join(output_dir, 'spike_templates.npy'), spike_clusters.astype(np.int32))
+    # Kilosort natively saves amplitudes and templates as column vectors (N, 1)
+    np.save(os.path.join(output_dir, 'amplitudes.npy'), amplitudes.astype(np.float32).reshape(-1, 1))
+    np.save(os.path.join(output_dir, 'spike_templates.npy'), spike_clusters.astype(np.int32).reshape(-1, 1))
 
     # Save the config file for reproducibility
     with open(os.path.join(output_dir, 'params.yml'), 'w') as f:
