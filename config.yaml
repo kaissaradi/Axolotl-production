@@ -19,7 +19,7 @@ recording:
   
   # Optional: Provide a list of known good electrode indices. 
   # If left blank/commented out, the pipeline assumes all channels except index 0 (TTL) are valid.
-  # connected_electrodes: [1, 2, 3, 5, 6, ..., 512]
+  connected_electrodes: [1, 2, 3, 5]
 
 pipeline:
   max_units_to_find: 200
@@ -35,5 +35,5 @@ preprocessing:
 
 testing:
   enabled: True
-  duration_sec: 30
-max_units: 3~
+  duration_sec: 15
+  max_units: 1
