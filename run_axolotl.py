@@ -62,13 +62,19 @@ def merge_duplicate_units(unit_list: List[Dict], similarity_threshold: float = 0
             total_spikes = sum(len(unit_list[i]['spike_times']) for i in indices)
             merged_ei = np.zeros_like(unit_list[indices[0]]['ei'], dtype=np.float64)
             merged_spikes = []
+            merged_amps = []
             for i in indices:
                 weight = len(unit_list[i]['spike_times']) / total_spikes
                 merged_ei += weight * unit_list[i]['ei'].astype(np.float64)
                 merged_spikes.extend(unit_list[i]['spike_times'])
+                if 'amplitudes' in unit_list[i]:
+                    merged_amps.extend(unit_list[i]['amplitudes'])
+            
+            sort_idx = np.argsort(merged_spikes)
             merged_units.append({
                 'ei': merged_ei.astype(np.float32),
-                'spike_times': np.sort(np.array(merged_spikes)),
+                'spike_times': np.array(merged_spikes)[sort_idx],
+                'amplitudes': np.array(merged_amps)[sort_idx],
                 'unit_id': indices[0],
             })
     return merged_units
@@ -110,7 +116,6 @@ def main(config_path: str):
         max_samples_to_load = int(duration_sec * sampling_rate)
         max_units_to_find = config['testing'].get('max_units', 15)
 
-    # Route loading logic based on format
     if data_format == 'litke':
         print(f"--- LITKE MODE: Loading chunked data from folder ---")
         raw_data = load_litke_folder(
@@ -120,7 +125,6 @@ def main(config_path: str):
             max_samples=max_samples_to_load,
             connected_electrodes=connected_electrodes
         )
-        # Update the pipeline's channel count to match the pruned valid channels
         n_channels = raw_data.n_channels_out
     else:
         raw_data = load_raw_binary(raw_data_path, n_channels, dtype, max_samples=max_samples_to_load)
@@ -128,12 +132,10 @@ def main(config_path: str):
     total_samples = raw_data.shape[0]
     ei_positions = load_channel_map(channel_map_path)
 
-    # Filter positions map if Litke mode dropped dead channels/TTL
     if data_format == 'litke' and len(ei_positions) > n_channels:
         if connected_electrodes is not None:
             ei_positions = ei_positions[connected_electrodes]
         else:
-            # Fallback assuming index 0 (TTL) was the only channel dropped
             ei_positions = ei_positions[1:n_channels + 1]
 
     if os.path.exists(baseline_path):
@@ -150,7 +152,6 @@ def main(config_path: str):
     print("Subtracting baselines...")
     subtract_segment_baselines_int16(raw_data=raw_data, baselines_f32=baselines, segment_len=segment_len)
 
-    # ----- Initial threshold estimation (once, before the loop) -----
     print("Estimating initial thresholds...")
     samples_for_thresh = min(total_samples, 5_000_000)
     thresholds = np.zeros(n_channels, dtype=float)
@@ -167,9 +168,9 @@ def main(config_path: str):
     ax_ei_list: List[np.ndarray] = []
     all_spike_times: List[np.ndarray] = []
     all_spike_clusters: List[np.ndarray] = []
+    all_spike_amps: List[np.ndarray] = []
     unit_records: List[Dict] = []
 
-    # Open HDF5 once for the full run (issue #16)
     with h5py.File(h5_out_path, 'w') as h5:
         while True:
             if unit_id >= max_units_to_find:
@@ -179,14 +180,12 @@ def main(config_path: str):
             print(f"\n=== Unit {unit_id} ===")
             start_time = time.time()
 
-            # 1. Find promising dominant channel
             dominant_channels, _ = find_dominant_channel_ram(raw_data=raw_data, positions=ei_positions)
             ref_channel = next((ch for ch in dominant_channels if thresholds[ch] < 0), -1)
             if ref_channel == -1:
                 print("No more active channels. Stopping.")
                 break
 
-            # 2. Use pre-computed threshold to find spikes (issue #9)
             threshold = thresholds[ref_channel]
             _, initial_spike_times, _ = estimate_spike_threshold_ram(
                 raw_data=raw_data, ref_channel=ref_channel,
@@ -198,7 +197,6 @@ def main(config_path: str):
                 print("Too few spikes. Skipping.")
                 continue
 
-            # 3. Extract snippets on all channels (needed for EI / clustering)
             snips_unaligned, valid_unaligned_times = extract_snippets_fast_ram(
                 raw_data=raw_data,
                 spike_times=initial_spike_times,
@@ -214,7 +212,6 @@ def main(config_path: str):
             k_start = min(5, 3 + (len(valid_unaligned_times) - 1) // 3000)
             clusters_pre = cluster_spike_waveforms(snips_unaligned, ei_initial, k_start=k_start)
 
-            # 4. Select dominant cluster
             try:
                 _, cluster_indices, _, _ = select_cluster_with_largest_waveform(clusters_pre, ref_channel)
             except ValueError:
@@ -222,7 +219,6 @@ def main(config_path: str):
                 thresholds[ref_channel] = 0
                 continue
 
-            # 5. Purify dominant cluster
             print(f"Purifying dominant cluster of {len(cluster_indices)} spikes...")
             snips_dominant = snips_unaligned[:, :, cluster_indices]
             n_spikes = snips_dominant.shape[2]
@@ -237,7 +233,6 @@ def main(config_path: str):
                     cluster_indices = cluster_indices[main_mask]
                     print(f"Kept {len(cluster_indices)}/{orig_count} spikes after purification.")
 
-            # 6. Align spikes
             cluster_spike_times = valid_unaligned_times[cluster_indices]
             ref_channel_snips = snips_unaligned[ref_channel, :, cluster_indices]
             lags = estimate_lags_by_xcorr_ram(
@@ -246,7 +241,6 @@ def main(config_path: str):
             )
             aligned_spike_times = cluster_spike_times + lags
 
-            # 7. Re-extract aligned snippets — only channels with meaningful signal (issue #15)
             ei_p2p_pre = np.ptp(ei_initial, axis=1)
             p2p_threshold = 30
             selected_channels_final = np.where(ei_p2p_pre > p2p_threshold)[0]
@@ -261,32 +255,33 @@ def main(config_path: str):
                 window=window,
             )
 
-            # 8. Compute final EI on selected channels; build full-array EI for comparison
             ei_selected = median_ei_adaptive(snips_final)
             final_ei = np.zeros((n_channels, ei_selected.shape[1]), dtype=np.float32)
             final_ei[selected_channels_final] = ei_selected
 
-            # 9. Duplicate rejection (lag-tolerant, issue #8)
             if reject_duplicate(final_ei, ax_ei_list, threshold=duplicate_threshold):
                 print(f"Unit {unit_id} rejected as duplicate.")
                 thresholds[ref_channel] = 0
                 continue
 
-            # 10. Accept unit
+            # Calculate actual spike amplitudes from the final extracted snippets
+            peak_idx_in_sel = np.argmax(np.ptp(ei_selected, axis=1))
+            spike_amps = np.ptp(snips_final[peak_idx_in_sel, :, :], axis=0)
+
             ax_ei_list.append(final_ei)
             all_spike_times.append(final_valid_times)
             all_spike_clusters.append(np.full(final_valid_times.shape, unit_id, dtype=np.int32))
-            unit_records.append({'ei': final_ei, 'spike_times': final_valid_times, 'unit_id': unit_id})
+            all_spike_amps.append(spike_amps)
+            unit_records.append({'ei': final_ei, 'spike_times': final_valid_times, 'amplitudes': spike_amps, 'unit_id': unit_id})
 
             grp = h5.create_group(f'unit_{unit_id}')
             grp.create_dataset('spike_times', data=final_valid_times, compression='gzip')
             grp.create_dataset('ei', data=final_ei, compression='gzip')
             grp.attrs['peak_channel'] = ref_channel
 
-            # 11. Subtract unit from raw data
             subtraction_channels = selected_channels_final
             if len(final_valid_times) >= 100 and len(subtraction_channels) > 0:
-                snips_for_sub = snips_final.transpose(2, 0, 1)  # (n_spikes, n_sel_ch, T)
+                snips_for_sub = snips_final.transpose(2, 0, 1) 
                 residuals_per_channel = {}
                 for ch_idx, ch in enumerate(subtraction_channels):
                     ch_snips = snips_for_sub[:, ch_idx, :]
@@ -294,9 +289,8 @@ def main(config_path: str):
                 subtraction_residuals = residuals_per_channel
             else:
                 print(f"Unit {unit_id} <100 spikes. Using simple subtraction.")
-                template = np.mean(snips_final[0, :, :], axis=1)  # peak channel (index 0 of selected)
+                template = np.mean(snips_final[0, :, :], axis=1)
                 residuals_T = snips_final[0, :, :].T - template
-                # Fix: clip before int16 cast (issue #6)
                 residuals_T = np.clip(residuals_T, -32768, 32767).astype(np.int16)
                 subtraction_residuals = {selected_channels_final[0]: residuals_T}
                 subtraction_channels = [selected_channels_final[0]]
@@ -310,7 +304,6 @@ def main(config_path: str):
                 is_ram=True,
             )
 
-            # 12. Recompute thresholds on affected channels
             recomputed = 0
             for ch in subtraction_channels:
                 if thresholds[ch] != 0:
@@ -330,7 +323,6 @@ def main(config_path: str):
 
     print("\nPipeline finished.")
 
-    # ----- Post-hoc merge -----
     if do_post_merge and len(unit_records) > 0:
         print("Post-hoc merging...")
         merged = merge_duplicate_units(unit_records, similarity_threshold=duplicate_threshold)
@@ -339,16 +331,22 @@ def main(config_path: str):
         final_spike_clusters = np.concatenate([
             np.full(len(m['spike_times']), i, dtype=np.int32) for i, m in enumerate(merged)
         ])
+        final_amps = np.concatenate([m['amplitudes'] for m in merged])
         final_templates = np.transpose(np.stack([m['ei'] for m in merged], axis=0), (0, 2, 1))
+        
         save_phy_results(output_dir, final_spike_times, final_spike_clusters,
-                         final_templates, ei_positions, config)
+                         final_templates, final_amps, ei_positions, config)
+                         
     elif unit_id > 0:
         final_spike_times = np.concatenate(all_spike_times)
         final_spike_clusters = np.concatenate(all_spike_clusters)
+        final_amps = np.concatenate(all_spike_amps)
+        
         sort_idx = np.argsort(final_spike_times)
         final_templates = np.transpose(np.stack(ax_ei_list, axis=0), (0, 2, 1))
+        
         save_phy_results(output_dir, final_spike_times[sort_idx], final_spike_clusters[sort_idx],
-                         final_templates, ei_positions, config)
+                         final_templates, final_amps[sort_idx], ei_positions, config)
     else:
         print("No units found, skipping Phy export.")
 
