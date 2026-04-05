@@ -98,7 +98,7 @@ def main(config_path: str):
     connected_electrodes = config['recording'].get('connected_electrodes', None)
 
     max_units_to_find = config['pipeline']['max_units_to_find']
-    window = (config['pipeline']['window_pre_samples'], config['pipeline']['window_post_samples'])
+    window = (-config['pipeline']['window_pre_samples'], config['pipeline']['window_post_samples'])
     refractory_period = config['pipeline']['refractory_samples']
     segment_len = config['preprocessing']['segment_len']
 

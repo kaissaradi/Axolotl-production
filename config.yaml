@@ -36,4 +36,4 @@ preprocessing:
 testing:
   enabled: True
   duration_sec: 30
-  max_units: 3
+max_units: 3~

@@ -268,7 +268,7 @@ def save_phy_results(
     spike_clusters: np.ndarray,
     templates: np.ndarray,
     amplitudes: np.ndarray,
-    channel_map: np.ndarray,
+    channel_positions: np.ndarray,  # (C, 2) array of X/Y coordinates
     config: dict
 ):
     """
@@ -277,39 +277,41 @@ def save_phy_results(
     print(f"Saving Phy-compatible results to: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Kilosort natively saves these arrays as column vectors (N, 1)
+    # 1. Spikes, Clusters, and Amplitudes (Phy expects N x 1 column vectors)
     np.save(os.path.join(output_dir, 'spike_times.npy'), spike_times.astype(np.int64).reshape(-1, 1))
     np.save(os.path.join(output_dir, 'spike_clusters.npy'), spike_clusters.astype(np.int32).reshape(-1, 1))
-    np.save(os.path.join(output_dir, 'templates.npy'), templates.astype(np.float32))
-    
-    # REVERTED: Your GUI expects the 2D X/Y coordinates directly inside channel_map.npy
-    np.save(os.path.join(output_dir, 'channel_map.npy'), channel_map)
-    np.save(os.path.join(output_dir, 'channel_positions.npy'), channel_map.astype(np.float64))
-
-    # Kilosort natively saves amplitudes and templates as column vectors (N, 1)
     np.save(os.path.join(output_dir, 'amplitudes.npy'), amplitudes.astype(np.float32).reshape(-1, 1))
     np.save(os.path.join(output_dir, 'spike_templates.npy'), spike_clusters.astype(np.int32).reshape(-1, 1))
 
-    # Save the config file for reproducibility
-    with open(os.path.join(output_dir, 'params.yml'), 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
-        
-    # Create params.py for Phy
+    # 2. Templates
+    np.save(os.path.join(output_dir, 'templates.npy'), templates.astype(np.float32))
+    
+    # CRITICAL FIX: Phy silently drops templates if templates_ind.npy is missing!
+    n_units, n_samples, n_channels = templates.shape
+    templates_ind = np.tile(np.arange(n_channels, dtype=np.int32), (n_units, 1))
+    np.save(os.path.join(output_dir, 'templates_ind.npy'), templates_ind)
+
+    # 3. Channel Maps
+    # Logical map must be a 1D list of indices, positions must be 2D X/Y coordinates
+    logical_map = np.arange(len(channel_positions), dtype=np.int32).reshape(-1, 1)
+    np.save(os.path.join(output_dir, 'channel_map.npy'), logical_map)
+    np.save(os.path.join(output_dir, 'channel_positions.npy'), channel_positions.astype(np.float64))
+
+    # 4. Params File
     with open(os.path.join(output_dir, 'params.py'), 'w') as f:
         f.write(f"dat_path = 'dummy.dat'\n")
-        f.write(f"n_channels_dat = {len(channel_map)}\n")
+        f.write(f"n_channels_dat = {len(channel_positions)}\n")
         f.write(f"dtype = '{config['recording']['dtype']}'\n")
         f.write(f"offset = 0\n")
         f.write(f"sample_rate = {config['recording']['sampling_rate']}\n")
         f.write(f"hp_filtered = False\n")
 
-    # --- Create and save cluster_group.tsv ---
+    # 5. Cluster Group TSV
     print("Creating cluster_group.tsv...")
     unique_clusters = np.unique(spike_clusters)
-
     with open(os.path.join(output_dir, 'cluster_group.tsv'), 'w') as f:
-        f.write("cluster_id\tgroup\n")  # Write the header
+        f.write("cluster_id\tgroup\n")
         for cluster_id in unique_clusters:
             f.write(f"{cluster_id}\tgood\n")
 
-    print("Results saved successfully.")
+print("Results saved successfully.")
